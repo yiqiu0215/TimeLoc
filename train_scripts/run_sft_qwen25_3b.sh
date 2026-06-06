@@ -5,8 +5,9 @@ set -euo pipefail
 export PYTHONPATH="./:${PYTHONPATH:-}"
 
 model_path="/root/autodl-tmp/hf/hub/models--Qwen--Qwen2.5-VL-3B-Instruct/snapshots/66285546d2b821cf421d4f5eb2576359d3770cd3"
+processor_path="TencentARC/TimeLens-7B"
 datasets="gemini_refined_data"
-model_id="qwen2.5-vl-3b"
+model_id="timelens-3b"
 min_tokens=64
 total_tokens=14336
 fps=2
@@ -19,12 +20,13 @@ num_devices=2
 epochs=1
 target_size=30000
 deepspeed_config="scripts/zero3.json"
-output_root="/root/autodl-tmp/output/TimeLens-Qwen2.5-VL-3B/sft-30k"
+output_root="/root/autodl-tmp/output/TimeLens-3B/sft"
 report_to="none"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model_path) model_path="$2"; shift 2 ;;
+    --processor_path) processor_path="$2"; shift 2 ;;
     --datasets) datasets="$2"; shift 2 ;;
     --min_tokens) min_tokens="$2"; shift 2 ;;
     --total_tokens) total_tokens="$2"; shift 2 ;;
@@ -66,6 +68,7 @@ deepspeed training/train/train_sft_timelens.py \
   --use_liger True \
   --deepspeed "${deepspeed_config}" \
   --model_name_or_path "${model_path}" \
+  --processor_path "${processor_path}" \
   --model_id "${model_id}" \
   --conv_type "chatml" \
   --datasets "${datasets}" \
