@@ -19,6 +19,11 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pred_path", required=True, help="Output prediction path")
     parser.add_argument("--model_path", required=True, help="Path to the model")
+    parser.add_argument(
+        "--processor_path",
+        default=None,
+        help="Processor checkpoint path. For TimeLens-3B, set to TencentARC/TimeLens-7B.",
+    )
     parser.add_argument("--min_tokens", type=int, default=16)
     parser.add_argument("--total_tokens", type=int, default=3584)
     parser.add_argument("--fps", type=int, default=2)
@@ -68,9 +73,13 @@ if __name__ == "__main__":
         device_map=args.device,
     ).eval()
 
+    processor_source = args.processor_path or args.model_path
+    args.processor_path = processor_source
+    args.format_model_path = processor_source
+
     # Load processor (model-specific)
     processor = AutoProcessor.from_pretrained(
-        args.model_path,
+        processor_source,
         padding_side="left",
         do_resize=False,  # For Video Processing, we do not need to resize the video frames again in the processor
         trust_remote_code=True,
