@@ -35,7 +35,7 @@ def _is_qwen3_model(model_path: str) -> bool:
     if not model_path:
         return False
     m = model_path.lower()
-    return "qwen3" in m or "timelens-8b" in m
+    return "qwen3" in m or "timelens-2b" in m or "timelens-8b" in m
 
 
 class GroundingDataset(Dataset):

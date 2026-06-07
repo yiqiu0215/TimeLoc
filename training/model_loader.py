@@ -7,6 +7,7 @@ def _validate_model_path(model_path: str) -> None:
     model_path_lower = model_path.lower()
     supported = (
         "qwen3" in model_path_lower
+        or "timelens-2b" in model_path_lower
         or "timelens-8b" in model_path_lower
         or "qwen2.5-vl" in model_path_lower
         or "qwen2.5_vl" in model_path_lower
@@ -16,7 +17,7 @@ def _validate_model_path(model_path: str) -> None:
     if not supported:
         raise ValueError(
             f"Unsupported model_path={model_path!r}. "
-            "Expected Qwen3-VL/TimeLens-8B or Qwen2.5-VL/TimeLens-3B/7B."
+            "Expected Qwen3-VL/TimeLens-2B/8B or Qwen2.5-VL/TimeLens-3B/7B."
         )
 
 
