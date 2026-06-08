@@ -27,6 +27,9 @@ echo -e "\e[1;36mEvaluating datasets:\e[0m ${datasets[*]}"
 # Use model path from environment variable or default
 model_path=${model_path:-"TencentARC/TimeLens-8B"}
 processor_path=${processor_path:-""}
+lact_enable=${lact_enable:-"false"}
+lact_checkpoint_path=${lact_checkpoint_path:-""}
+lact_config_path=${lact_config_path:-""}
 
 #---------------------------- Configuration ----------------------------#
 min_tokens=${min_tokens:-64}
@@ -61,6 +64,17 @@ for dataset in "${datasets[@]}"; do
 
     # Run inference for current dataset
     for IDX in $(seq 0 $((CHUNKS-1))); do
+        lact_args=()
+        if [[ "${lact_enable}" == "true" || "${lact_enable}" == "1" ]]; then
+            lact_args+=(--lact_enable)
+        fi
+        if [[ -n "${lact_checkpoint_path}" ]]; then
+            lact_args+=(--lact_checkpoint_path "${lact_checkpoint_path}")
+        fi
+        if [[ -n "${lact_config_path}" ]]; then
+            lact_args+=(--lact_config_path "${lact_config_path}")
+        fi
+
         CUDA_VISIBLE_DEVICES=${GPULIST[$IDX]} python evaluation/eval_dataloader.py \
             --dataset $dataset \
             --pred_path $current_pred_path \
@@ -70,7 +84,8 @@ for dataset in "${datasets[@]}"; do
             --total_tokens $total_tokens \
             --fps $FPS \
             --chunk $CHUNKS \
-            --index $IDX &
+            --index $IDX \
+            "${lact_args[@]}" &
     done
 
     wait

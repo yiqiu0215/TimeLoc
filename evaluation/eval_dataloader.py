@@ -27,6 +27,21 @@ def parse_args():
     parser.add_argument("--min_tokens", type=int, default=16)
     parser.add_argument("--total_tokens", type=int, default=3584)
     parser.add_argument("--fps", type=int, default=2)
+    parser.add_argument(
+        "--lact_enable",
+        action="store_true",
+        help="Load a Spatial-TTT LaCT checkpoint and use generate_with_spatial_ttt.",
+    )
+    parser.add_argument(
+        "--lact_checkpoint_path",
+        default=None,
+        help="Optional LaCT checkpoint path. Defaults to --model_path.",
+    )
+    parser.add_argument(
+        "--lact_config_path",
+        default=None,
+        help="Optional path to lact_config.json. Defaults to <checkpoint>/lact_config.json.",
+    )
 
     parser.add_argument("--dataset", required=True, help="Dataset name")
     parser.add_argument("--split", default="test")
@@ -66,12 +81,23 @@ if __name__ == "__main__":
     )
 
     # Load model
-    model = AutoModelForImageTextToText.from_pretrained(
-        args.model_path,
-        dtype=torch.bfloat16,
-        attn_implementation="flash_attention_2",
-        device_map=args.device,
-    ).eval()
+    if args.lact_enable:
+        from timelens.modeling.lact import load_lact_model_for_inference
+
+        model = load_lact_model_for_inference(
+            args.lact_checkpoint_path or args.model_path,
+            lact_config_path=args.lact_config_path,
+            torch_dtype=torch.bfloat16,
+            device_map=args.device,
+            attn_implementation="flash_attention_2",
+        )
+    else:
+        model = AutoModelForImageTextToText.from_pretrained(
+            args.model_path,
+            dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2",
+            device_map=args.device,
+        ).eval()
 
     processor_source = args.processor_path or args.model_path
     args.processor_path = processor_source
@@ -115,14 +141,27 @@ if __name__ == "__main__":
         duration = anno["duration"]
         span = anno["span"]  # ground truth time span
 
-        output_ids = model.generate(
-            **inputs,
-            do_sample=False,
-            temperature=None,
-            top_p=None,
-            top_k=None,
-            max_new_tokens=512,
-        )
+        if args.lact_enable:
+            output_ids = model.generate_with_spatial_ttt(
+                inputs["input_ids"],
+                pixel_values_videos=inputs.get("pixel_values_videos", None),
+                video_grid_thw=inputs.get("video_grid_thw", None),
+                pixel_values=inputs.get("pixel_values", None),
+                image_grid_thw=inputs.get("image_grid_thw", None),
+                do_sample=False,
+                max_new_tokens=512,
+                eos_token_id=processor.tokenizer.eos_token_id,
+                pad_token_id=processor.tokenizer.pad_token_id,
+            )
+        else:
+            output_ids = model.generate(
+                **inputs,
+                do_sample=False,
+                temperature=None,
+                top_p=None,
+                top_k=None,
+                max_new_tokens=512,
+            )
 
         generated_ids_trimmed = [
             out_ids[len(in_ids) :]

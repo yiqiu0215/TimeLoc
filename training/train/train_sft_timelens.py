@@ -77,6 +77,16 @@ def configure_llm(model, training_args):
     set_requires_grad(llm_params, not training_args.freeze_llm)
 
 
+def configure_lact_trainable(model, training_args):
+    if not training_args.lact_enable or not training_args.freeze_llm:
+        return
+    from timelens.modeling.lact import LACT_PARAM_KEYWORDS
+
+    for name, param in model.named_parameters():
+        if any(keyword in name for keyword in LACT_PARAM_KEYWORDS):
+            param.requires_grad = True
+
+
 def train():
     global local_rank
 
@@ -138,20 +148,64 @@ def train():
         model_args.model_name_or_path, trust_remote_code=True
     )
 
-    model = model_cls.from_pretrained(
-        model_args.model_name_or_path,
-        config=config,
-        torch_dtype=compute_dtype,
-        attn_implementation="flash_attention_2"
-        if not training_args.disable_flash_attn2
-        else "sdpa",
-        trust_remote_code=True,
-        **bnb_model_from_pretrained_args,
-    )
+    lact_config = None
+    if training_args.lact_enable:
+        from timelens.modeling.lact import (
+            LaCTConfig,
+            is_lact_checkpoint,
+            load_lact_config,
+            load_lact_model_for_training,
+            patch_qwen3vl_forward,
+            print_lact_parameters,
+            save_lact_config,
+            wrap_model_with_lact_for_training,
+        )
+
+        if is_lact_checkpoint(model_args.model_name_or_path):
+            lact_config = load_lact_config(model_args.model_name_or_path)
+            rank0_print(f"Loading Spatial-TTT LaCT checkpoint with config: {lact_config}")
+            model = load_lact_model_for_training(
+                model_args.model_name_or_path,
+                lact_config=lact_config,
+                torch_dtype=compute_dtype,
+                attn_implementation="flash_attention_2"
+                if not training_args.disable_flash_attn2
+                else "sdpa",
+            )
+            patch_qwen3vl_forward(model)
+        else:
+            model = model_cls.from_pretrained(
+                model_args.model_name_or_path,
+                config=config,
+                torch_dtype=compute_dtype,
+                attn_implementation="flash_attention_2"
+                if not training_args.disable_flash_attn2
+                else "sdpa",
+                trust_remote_code=True,
+                **bnb_model_from_pretrained_args,
+            )
+            lact_config = LaCTConfig.from_args(training_args)
+            rank0_print(f"Enabling Spatial-TTT LaCT with config: {lact_config}")
+            patch_qwen3vl_forward(model)
+            model = wrap_model_with_lact_for_training(model, lact_config)
+        if local_rank in (0, -1):
+            save_lact_config(training_args.output_dir, lact_config)
+    else:
+        model = model_cls.from_pretrained(
+            model_args.model_name_or_path,
+            config=config,
+            torch_dtype=compute_dtype,
+            attn_implementation="flash_attention_2"
+            if not training_args.disable_flash_attn2
+            else "sdpa",
+            trust_remote_code=True,
+            **bnb_model_from_pretrained_args,
+        )
 
     model.config.use_cache = False
     model_to_configure = model
     configure_llm(model_to_configure, training_args)
+    configure_lact_trainable(model_to_configure, training_args)
     configure_vision_tower(
         model_to_configure, training_args, compute_dtype, training_args.device
     )
@@ -205,8 +259,17 @@ def train():
                 if "merger" in name:
                     param.requires_grad = True
 
+        if training_args.lact_enable:
+            from timelens.modeling.lact import LACT_PARAM_KEYWORDS
+
+            for name, param in model.named_parameters():
+                if any(keyword in name for keyword in LACT_PARAM_KEYWORDS):
+                    param.requires_grad = True
+
     if training_args.local_rank in (0, -1):
         print_trainable_parameters(model, training_args=training_args)
+        if training_args.lact_enable:
+            print_lact_parameters(model)
 
     # `qwen_vl_utils` already resizes frames in the data pipeline, so keep
     # `do_resize=False` at the processor call sites instead of persisting it
@@ -243,6 +306,13 @@ def train():
         ),
     )
 
+    if training_args.lact_enable and training_args.lact_lr is not None:
+        from timelens.modeling.lact import create_lact_optimizer
+
+        trainer.create_optimizer = lambda: create_lact_optimizer(
+            trainer, training_args.lact_lr
+        )
+
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
         trainer.train(resume_from_checkpoint=True)
     else:
@@ -271,6 +341,9 @@ def train():
             )
     else:
         safe_save_model_for_hf_trainer(trainer, output_dir=training_args.output_dir)
+
+    if lact_config is not None and local_rank in (0, -1):
+        save_lact_config(training_args.output_dir, lact_config)
 
     if local_rank == 0 or local_rank == -1:
         import shutil
