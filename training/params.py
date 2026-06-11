@@ -63,24 +63,23 @@ class TrainingArguments(HFTrainingArguments):
 
     lact_enable: bool = False
     num_lact_heads: int = 4
-    inter_multi: float = 1.0
     lact_chunk_size: int = 2648
     window_size: int = 2648
-    qkv_silu: bool = True
-    no_v_silu: bool = False
+    use_conv_layer: bool = True
+    use_momentum: bool = True
     use_muon: bool = True
     learnable_ttt_scale: bool = True
     w0_w2_low_rank: int = 0
-    use_momentum: bool = True
+    use_fused_kernel: bool = False
+    lact_lr: Optional[float] = None
+    lact_layers: str = "0/1/2/4/5/6/8/9/10/12/13/14/16/17/18/20/21/22/24/25/26"
+    qkv_silu: bool = True
+    no_v_silu: bool = False
     ttt_prenorm: bool = True
     ttt_nope: bool = False
-    use_fused_kernel: bool = False
     fp32_states: bool = True
-    use_conv_layer: bool = True
-    lact_layers: Optional[str] = (
-        "0/1/2/4/5/6/8/9/10/12/13/14/16/17/18/20/21/22/24/25/26"
-    )
-    lact_lr: Optional[float] = 1e-5
+    inter_multi: float = 1.0
+    fw_init_gain: float = 0.5
 
 
 @dataclass

@@ -8,6 +8,7 @@ try:
 except ImportError:
     ALL_LAYERNORM_LAYERS = [torch.nn.LayerNorm, torch.nn.GroupNorm, torch.nn.modules.normalization.LayerNorm]
 from training.train.train_utils import get_peft_state_maybe_zero_3, get_peft_state_non_lora_maybe_zero_3
+from training.lact.config import LACT_PARAM_KEYWORDS, LaCTConfig, save_lact_config
 
 class QwenSFTTrainer(Trainer):
     def __init__(self, *args, **kwargs):
@@ -21,10 +22,15 @@ class QwenSFTTrainer(Trainer):
             decay_parameters = [n for n in decay_parameters if "bias" not in n]
             visual_parameters = [n for n, _ in opt_model.named_parameters() if "visual" in n and "merger" not in n] if self.args.vision_lr else []
             merger_parameters = [n for n, _ in opt_model.named_parameters() if "merger" in n] if self.args.merger_lr else []
-            special = merger_parameters + visual_parameters
+            lact_parameters = [
+                n
+                for n, _ in opt_model.named_parameters()
+                if any(keyword in n for keyword in LACT_PARAM_KEYWORDS)
+            ] if getattr(self.args, "lact_lr", None) else []
+            special = merger_parameters + visual_parameters + lact_parameters
             if special:
                 grps = [{"params": [p for n, p in opt_model.named_parameters() if n in decay_parameters and n not in special and p.requires_grad], "weight_decay": self.args.weight_decay}, {"params": [p for n, p in opt_model.named_parameters() if n not in decay_parameters and n not in special and p.requires_grad], "weight_decay": 0.0}]
-                for lr, names in [(self.args.vision_lr, visual_parameters), (self.args.merger_lr, merger_parameters)]:
+                for lr, names in [(self.args.vision_lr, visual_parameters), (self.args.merger_lr, merger_parameters), (getattr(self.args, "lact_lr", None), lact_parameters)]:
                     if lr and names:
                         grps.extend([{"params": [p for n, p in opt_model.named_parameters() if n in decay_parameters and n in names and p.requires_grad], "weight_decay": self.args.weight_decay, "lr": lr}, {"params": [p for n, p in opt_model.named_parameters() if n not in decay_parameters and n in names and p.requires_grad], "weight_decay": 0.0, "lr": lr}])
             else:
@@ -64,3 +70,7 @@ class QwenSFTTrainer(Trainer):
                 self._push_from_checkpoint(out)
         else:
             super()._save_checkpoint(model, trial)
+            if getattr(self.args, "lact_enable", False) and self.args.should_save:
+                ckpt = f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}"
+                out = os.path.join(self._get_output_dir(trial=trial), ckpt)
+                save_lact_config(out, LaCTConfig.from_args(self.args))
