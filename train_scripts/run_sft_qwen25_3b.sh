@@ -14,6 +14,22 @@ fps=2
 fps_max_frames=""
 seed=42
 
+# DisTime-style continuous time modeling: TimeDec (output head) + TimeEnc (input
+# frame-time encoding) + <TIME_STAMP> GT teacher-forcing. Single master switch.
+# Default off => identical to the original baseline run.
+# NOTE: when enabled with the TimeLens-7B processor default below, processor_path
+# is auto-switched to model_path (standard Qwen2.5-VL processor, no textual timestamps).
+enable_time_dist="false"
+time_reg_max=32
+time_lambda_dfl=1.0
+time_lambda_iou=1.0
+time_head_num_layers=3
+frame_time_token="<FRAME_TIME>"
+time_enc_num_layers=3
+time_enc_sigma=1.0
+time_enc_input="true"
+time_enc_teacher_forcing="true"
+
 global_batch_size=128
 batch_per_device=2
 num_devices=2
@@ -41,12 +57,34 @@ while [[ $# -gt 0 ]]; do
     --deepspeed_config) deepspeed_config="$2"; shift 2 ;;
     --output_root) output_root="$2"; shift 2 ;;
     --report_to) report_to="$2"; shift 2 ;;
+    --enable_time_dist) enable_time_dist="$2"; shift 2 ;;
+    --time_reg_max) time_reg_max="$2"; shift 2 ;;
+    --time_lambda_dfl) time_lambda_dfl="$2"; shift 2 ;;
+    --time_lambda_iou) time_lambda_iou="$2"; shift 2 ;;
+    --time_head_num_layers) time_head_num_layers="$2"; shift 2 ;;
+    --frame_time_token) frame_time_token="$2"; shift 2 ;;
+    --time_enc_num_layers) time_enc_num_layers="$2"; shift 2 ;;
+    --time_enc_sigma) time_enc_sigma="$2"; shift 2 ;;
+    --time_enc_input) time_enc_input="$2"; shift 2 ;;
+    --time_enc_teacher_forcing) time_enc_teacher_forcing="$2"; shift 2 ;;
     *)
       echo "Unknown option: $1"
       exit 1
       ;;
   esac
 done
+
+# TimeEnc closes the textual-timestamp path: use the standard Qwen2.5-VL processor
+# (model_path's own), not TimeLens-7B. Auto-switch only if processor_path is still
+# the timelens default (respect an explicit user override otherwise).
+case "${enable_time_dist,,}" in
+  1|true|yes|on)
+    if [[ "${processor_path}" == "TencentARC/TimeLens-7B" ]]; then
+      processor_path="${model_path}"
+      echo "TimeEnc enabled: processor_path -> model_path (standard Qwen2.5-VL processor)."
+    fi
+    ;;
+esac
 
 grad_accum_steps=$((global_batch_size / (batch_per_device * num_devices)))
 if [[ -z "${fps_max_frames}" ]]; then
@@ -73,6 +111,16 @@ deepspeed training/train/train_sft_timelens.py \
   --conv_type "chatml" \
   --datasets "${datasets}" \
   --remove_unused_columns False \
+  --enable_time_dist "${enable_time_dist}" \
+  --time_reg_max "${time_reg_max}" \
+  --time_lambda_dfl "${time_lambda_dfl}" \
+  --time_lambda_iou "${time_lambda_iou}" \
+  --time_head_num_layers "${time_head_num_layers}" \
+  --frame_time_token "${frame_time_token}" \
+  --time_enc_num_layers "${time_enc_num_layers}" \
+  --time_enc_sigma "${time_enc_sigma}" \
+  --time_enc_input "${time_enc_input}" \
+  --time_enc_teacher_forcing "${time_enc_teacher_forcing}" \
   --output_dir "${output_dir}" \
   --min_tokens "${min_tokens}" \
   --total_tokens "${total_tokens}" \

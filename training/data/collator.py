@@ -52,4 +52,15 @@ class HybridDataCollator:
         if "second_per_grid_ts" in batch[0]:
             data["second_per_grid_ts"] = [t for d in batch for t in d["second_per_grid_ts"]]
 
+        # Time distribution head: variable-length GT spans (not padded) + durations.
+        if "time_gt" in batch[0]:
+            data["time_gt"] = [d.get("time_gt") for d in batch]
+            data["duration"] = torch.tensor(
+                [float(d["duration"]) for d in batch], dtype=torch.float32
+            )
+
+        # TimeEnc: per-sample frame sampling times (variable length T, not padded).
+        if "frame_times" in batch[0]:
+            data["frame_times"] = [d.get("frame_times") for d in batch]
+
         return data
