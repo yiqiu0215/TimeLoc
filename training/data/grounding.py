@@ -10,6 +10,7 @@ from torch.utils.data import Dataset
 
 from timelens.dataset.timelens_data import TimeLens100KDataset, parse_query
 from training.data.preprocess import IGNORE_INDEX, preprocess
+from training.data.time_interleave import build_interleave_video_inputs
 
 GROUNDING_PROMPT = (
     "Please find the visual event described by the sentence '{}', determining its starting and ending times. "
@@ -22,11 +23,16 @@ GROUNDING_PROMPT_TEXT_TIMESTAMP = (
     "The numbers before each video frame indicate its sampling timestamp (in seconds). "
 ) + GROUNDING_PROMPT
 
-# prompt for the TimeEnc path: frame timestamps are injected as continuous
-# embeddings (the <FRAME_TIME> tokens before the video), not as text numbers.
-GROUNDING_PROMPT_TIME_ENC = (
+# prompt for the TimeEnc prefix path: frame timestamps are injected as
+# continuous embeddings before the video, not as text numbers.
+GROUNDING_PROMPT_TIME_ENC_PREFIX = (
     "You are given a video with multiple frames. "
     "Before the video, a sequence of special time tokens encodes each frame's sampling timestamp (in seconds). "
+) + GROUNDING_PROMPT
+
+GROUNDING_PROMPT_TIME_ENC_INTERLEAVE = (
+    "You are given a video as a sequence of visual blocks. "
+    "Each visual block is preceded by a special time token that encodes the sampling timestamp of that visual block in seconds. "
 ) + GROUNDING_PROMPT
 
 AUDIO_QUERY_KEYWORDS = {
@@ -206,6 +212,12 @@ class GroundingDataset(Dataset):
         self._frame_time_token = getattr(
             model_args, "frame_time_token", "<FRAME_TIME>"
         )
+        self._time_enc_layout = getattr(model_args, "time_enc_layout", "prefix")
+        if self._time_enc_layout not in ("prefix", "interleave"):
+            raise ValueError(
+                "time_enc_layout must be either 'prefix' or 'interleave', "
+                f"got {self._time_enc_layout!r}."
+            )
         if self._enable_time_dist and not self._is_qwen2:
             # TimeEnc requires the standard Qwen2.5-VL processor (continuous frame
             # times), not the TimeLens-7B textual-timestamp processor. The run
@@ -369,8 +381,15 @@ class GroundingDataset(Dataset):
         # TimeEnc path: standard Qwen2.5-VL processor (continuous frame-time
         # embeddings) instead of TimeLens textual timestamps.
         use_time_enc = self._enable_time_dist and self._is_qwen2
+        use_time_enc_interleave = (
+            use_time_enc and self._time_enc_layout == "interleave"
+        )
         if use_time_enc:
-            prompt = GROUNDING_PROMPT_TIME_ENC
+            prompt = (
+                GROUNDING_PROMPT_TIME_ENC_INTERLEAVE
+                if use_time_enc_interleave
+                else GROUNDING_PROMPT_TIME_ENC_PREFIX
+            )
         elif self._is_qwen2_timelens:
             prompt = GROUNDING_PROMPT_TEXT_TIMESTAMP
         else:
@@ -387,6 +406,29 @@ class GroundingDataset(Dataset):
                 ],
             }
         ]
+
+        if use_time_enc_interleave:
+            response = _format_response_time_stamp(spans, self._time_stamp_token)
+            messages.append({"role": "assistant", "content": response})
+            text = self.processor.apply_chat_template(messages, tokenize=False).strip()
+            inputs, new_text, sampled_timestamps = build_interleave_video_inputs(
+                messages,
+                text,
+                self.processor,
+                frame_time_token=self._frame_time_token,
+            )
+            spans = _align_spans_to_sampled_timestamps(spans, sampled_timestamps)
+            inputs["input_ids"] = inputs["input_ids"][0]
+            inputs["labels"] = preprocess(
+                inputs["input_ids"],
+                new_text,
+                self.processor.tokenizer,
+                self.model_args.conv_type,
+            )
+            inputs["time_gt"] = [[float(s), float(e)] for s, e in spans]
+            inputs["duration"] = float(anno["duration"])
+            inputs["frame_times"] = [float(t) for t in sampled_timestamps]
+            return inputs
 
         if self._is_qwen2_timelens:
             images, videos = process_vision_info(

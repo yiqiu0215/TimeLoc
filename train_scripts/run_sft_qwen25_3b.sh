@@ -29,6 +29,7 @@ time_enc_num_layers=3
 time_enc_sigma=1.0
 time_enc_input="true"
 time_enc_teacher_forcing="true"
+time_enc_layout="prefix"
 
 global_batch_size=128
 batch_per_device=2
@@ -67,6 +68,7 @@ while [[ $# -gt 0 ]]; do
     --time_enc_sigma) time_enc_sigma="$2"; shift 2 ;;
     --time_enc_input) time_enc_input="$2"; shift 2 ;;
     --time_enc_teacher_forcing) time_enc_teacher_forcing="$2"; shift 2 ;;
+    --time_enc_layout) time_enc_layout="$2"; shift 2 ;;
     *)
       echo "Unknown option: $1"
       exit 1
@@ -121,6 +123,7 @@ deepspeed training/train/train_sft_timelens.py \
   --time_enc_sigma "${time_enc_sigma}" \
   --time_enc_input "${time_enc_input}" \
   --time_enc_teacher_forcing "${time_enc_teacher_forcing}" \
+  --time_enc_layout "${time_enc_layout}" \
   --output_dir "${output_dir}" \
   --min_tokens "${min_tokens}" \
   --total_tokens "${total_tokens}" \

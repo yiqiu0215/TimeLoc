@@ -7,6 +7,7 @@ from qwen_vl_utils import process_vision_info
 from torch.utils.data import Dataset
 
 from training.data.grounding import _extract_qwen2_timelens_sampled_timestamps
+from training.data.time_interleave import build_interleave_video_inputs
 
 GROUNDER_PROMPT = (
     "Please find the visual event described by the sentence '{}', determining its starting and ending times. "
@@ -19,11 +20,16 @@ GROUNDER_PROMPT_TEXT_TIMESTAMP = (
     "The numbers before each video frame indicate its sampling timestamp (in seconds). "
 ) + GROUNDER_PROMPT
 
-# prompt for the TimeEnc path: frame timestamps injected as continuous embeddings
-# (<FRAME_TIME> tokens before the video), not text numbers.
-GROUNDER_PROMPT_TIME_ENC = (
+# prompt for the TimeEnc prefix path: frame timestamps injected as continuous
+# embeddings before the video, not text numbers.
+GROUNDER_PROMPT_TIME_ENC_PREFIX = (
     "You are given a video with multiple frames. "
     "Before the video, a sequence of special time tokens encodes each frame's sampling timestamp (in seconds). "
+) + GROUNDER_PROMPT
+
+GROUNDER_PROMPT_TIME_ENC_INTERLEAVE = (
+    "You are given a video as a sequence of visual blocks. "
+    "Each visual block is preceded by a special time token that encodes the sampling timestamp of that visual block in seconds. "
 ) + GROUNDER_PROMPT
 
 
@@ -64,6 +70,12 @@ class GroundingDataset(Dataset):
         self._is_qwen3 = _is_qwen3_model(self._format_model_path)
         self._enable_time_dist = getattr(args, "enable_time_dist", False)
         self._frame_time_token = getattr(args, "frame_time_token", "<FRAME_TIME>")
+        self._time_enc_layout = getattr(args, "time_enc_layout", "prefix")
+        if self._time_enc_layout not in ("prefix", "interleave"):
+            raise ValueError(
+                "time_enc_layout must be either 'prefix' or 'interleave', "
+                f"got {self._time_enc_layout!r}."
+            )
         # Routed by the flag, NOT the path string: at eval the processor_path is
         # the training output dir (e.g. ".../TimeLens-3B/...") which would falsely
         # match the timelens path. enable_time_dist implies the standard Qwen2.5-VL
@@ -71,7 +83,11 @@ class GroundingDataset(Dataset):
         self._use_time_enc = bool(self._enable_time_dist)
         if self._use_time_enc:
             # TimeEnc: continuous frame-time embeddings, standard Qwen2.5-VL processor.
-            self.prompt = GROUNDER_PROMPT_TIME_ENC
+            self.prompt = (
+                GROUNDER_PROMPT_TIME_ENC_INTERLEAVE
+                if self._time_enc_layout == "interleave"
+                else GROUNDER_PROMPT_TIME_ENC_PREFIX
+            )
         elif self._is_qwen2_timelens:
             # Qwen2.5-TimeLens uses interleaved textual timestamps.
             self.prompt = GROUNDER_PROMPT_TEXT_TIMESTAMP
@@ -122,6 +138,15 @@ class GroundingDataset(Dataset):
             # TimeEnc: standard Qwen2.5-VL processing + <FRAME_TIME> splice.
             # Routed first so the output-dir path string can't misroute to the
             # textual-timestamp path.
+            if self._time_enc_layout == "interleave":
+                inputs, _new_text, frame_times = build_interleave_video_inputs(
+                    messages,
+                    text,
+                    self.processor,
+                    frame_time_token=self._frame_time_token,
+                )
+                return {"inputs": inputs, "anno": anno, "frame_times": frame_times}
+
             images, videos, video_kwargs = process_vision_info(
                 messages,
                 return_video_kwargs=True,

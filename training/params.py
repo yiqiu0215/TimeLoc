@@ -31,6 +31,9 @@ class ModelArguments:
     # Ablation sub-toggles (only effective when enable_time_dist=True).
     time_enc_input: bool = field(default=True)  # False => no input frame-time TimeEnc
     time_enc_teacher_forcing: bool = field(default=True)  # False => no <TIME_STAMP> GT inject
+    # Stage 3 input-side <FRAME_TIME> layout. "prefix" keeps Stage 2 behavior;
+    # "interleave" splits the video block into image-style blocks.
+    time_enc_layout: str = field(default="prefix")
 
 
 @dataclass

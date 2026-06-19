@@ -45,6 +45,7 @@ time_stamp_token=${time_stamp_token:-"<TIME_STAMP>"}
 frame_time_token=${frame_time_token:-"<FRAME_TIME>"}
 time_enc_num_layers=${time_enc_num_layers:-3}
 time_enc_sigma=${time_enc_sigma:-1.0}
+time_enc_layout=${time_enc_layout:-prefix}
 
 time_head_args=()
 case "${enable_time_dist,,}" in
@@ -57,8 +58,9 @@ case "${enable_time_dist,,}" in
             --frame_time_token "$frame_time_token"
             --time_enc_num_layers "$time_enc_num_layers"
             --time_enc_sigma "$time_enc_sigma"
+            --time_enc_layout "$time_enc_layout"
         )
-        echo -e "\e[1;36mDisTime (TimeDec+TimeEnc):\e[0m ENABLED (reg_max=$time_reg_max, layers=$time_head_num_layers, sigma=$time_enc_sigma)"
+        echo -e "\e[1;36mDisTime (TimeDec+TimeEnc):\e[0m ENABLED (reg_max=$time_reg_max, layers=$time_head_num_layers, sigma=$time_enc_sigma, layout=$time_enc_layout)"
         ;;
 esac
 

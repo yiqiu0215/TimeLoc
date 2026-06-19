@@ -97,6 +97,11 @@ def parse_args():
     parser.add_argument("--frame_time_token", default="<FRAME_TIME>")
     parser.add_argument("--time_enc_num_layers", type=int, default=3)
     parser.add_argument("--time_enc_sigma", type=float, default=1.0)
+    parser.add_argument(
+        "--time_enc_layout",
+        default="prefix",
+        choices=["prefix", "interleave"],
+    )
     args = parser.parse_args()
     return args
 
