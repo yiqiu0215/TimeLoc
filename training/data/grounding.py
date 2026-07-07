@@ -32,7 +32,7 @@ GROUNDING_PROMPT_TIME_ENC_PREFIX = (
 
 GROUNDING_PROMPT_TIME_ENC_INTERLEAVE = (
     "You are given a video as a sequence of visual blocks. "
-    "Each visual block is preceded by a special time token that encodes the sampling timestamp of that visual block in seconds. "
+    "Each visual block is preceded by two special interval time tokens that encode the sampling timestamps of the two frames in that visual block in seconds. "
 ) + GROUNDING_PROMPT
 
 AUDIO_QUERY_KEYWORDS = {
@@ -210,7 +210,7 @@ class GroundingDataset(Dataset):
             model_args, "time_stamp_token", "<TIME_STAMP>"
         )
         self._frame_time_token = getattr(
-            model_args, "frame_time_token", "<FRAME_TIME>"
+            model_args, "frame_time_token", "<TIME_SAMPLE>"
         )
         self._time_enc_layout = getattr(model_args, "time_enc_layout", "prefix")
         if self._time_enc_layout not in ("prefix", "interleave"):
@@ -528,16 +528,16 @@ class GroundingDataset(Dataset):
             inputs["time_gt"] = [[float(s), float(e)] for s, e in spans]
             inputs["duration"] = float(anno["duration"])
         if use_time_enc:
-            # Splice <FRAME_TIME> placeholders before the video block and record
+            # Splice <TIME_SAMPLE> placeholders before the video block and record
             # the per-grid sampling timestamps for TimeEnc injection.
             inputs["frame_times"] = [float(t) for t in sampled_timestamps]
             self._splice_frame_time_tokens(inputs, len(sampled_timestamps))
         return inputs
 
     def _splice_frame_time_tokens(self, inputs, num_frames):
-        """Insert ``num_frames`` <FRAME_TIME> ids right before <|vision_start|>.
+        """Insert ``num_frames`` <TIME_SAMPLE> ids right before <|vision_start|>.
 
-        <FRAME_TIME> are pure text tokens placed outside the contiguous video
+        <TIME_SAMPLE> are pure text tokens placed outside the contiguous video
         block, so Qwen2.5-VL's MRoPE / vision scatter are unaffected. Labels get
         IGNORE_INDEX at the spliced positions (they sit in the user turn).
         """
@@ -557,7 +557,7 @@ class GroundingDataset(Dataset):
 
         positions = (input_ids == vision_start_id).nonzero(as_tuple=True)[0]
         if positions.numel() == 0:
-            raise ValueError("No <|vision_start|> in input_ids; cannot splice <FRAME_TIME>.")
+            raise ValueError("No <|vision_start|> in input_ids; cannot splice frame-time token.")
         p = int(positions[0].item())
 
         prefix = torch.full((num_frames,), int(frame_tid), dtype=input_ids.dtype)

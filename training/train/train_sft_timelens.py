@@ -313,7 +313,7 @@ def train():
             )
     else:
         safe_save_model_for_hf_trainer(trainer, output_dir=training_args.output_dir)
-        # The time head adds <TIME_STAMP>/<FRAME_TIME> special tokens; persist the
+        # The time head adds <TIME_STAMP>/<TIME_SAMPLE> special tokens; persist the
         # processor so evaluation can reload the tokenizer with the resized vocabulary.
         if getattr(model_args, "enable_time_dist", False) and (
             local_rank == 0 or local_rank == -1

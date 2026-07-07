@@ -29,7 +29,7 @@ GROUNDER_PROMPT_TIME_ENC_PREFIX = (
 
 GROUNDER_PROMPT_TIME_ENC_INTERLEAVE = (
     "You are given a video as a sequence of visual blocks. "
-    "Each visual block is preceded by a special time token that encodes the sampling timestamp of that visual block in seconds. "
+    "Each visual block is preceded by two special interval time tokens that encode the sampling timestamps of the two frames in that visual block in seconds. "
 ) + GROUNDER_PROMPT
 
 
@@ -69,7 +69,7 @@ class GroundingDataset(Dataset):
         self._is_qwen2 = _is_qwen2_model(self._format_model_path)
         self._is_qwen3 = _is_qwen3_model(self._format_model_path)
         self._enable_time_dist = getattr(args, "enable_time_dist", False)
-        self._frame_time_token = getattr(args, "frame_time_token", "<FRAME_TIME>")
+        self._frame_time_token = getattr(args, "frame_time_token", "<TIME_SAMPLE>")
         self._time_enc_layout = getattr(args, "time_enc_layout", "prefix")
         if self._time_enc_layout not in ("prefix", "interleave"):
             raise ValueError(
@@ -135,7 +135,7 @@ class GroundingDataset(Dataset):
         )
 
         if self._use_time_enc:
-            # TimeEnc: standard Qwen2.5-VL processing + <FRAME_TIME> splice.
+            # TimeEnc: standard Qwen2.5-VL processing + <TIME_SAMPLE> splice.
             # Routed first so the output-dir path string can't misroute to the
             # textual-timestamp path.
             if self._time_enc_layout == "interleave":
@@ -217,10 +217,10 @@ class GroundingDataset(Dataset):
         return {"inputs": inputs, "anno": anno}
 
     def _splice_frame_time_tokens(self, inputs, num_frames):
-        """Insert ``num_frames`` <FRAME_TIME> ids before <|vision_start|> ([1, L]).
+        """Insert ``num_frames`` <TIME_SAMPLE> ids before <|vision_start|> ([1, L]).
 
         Mirrors the training-side splice (see grounding.py). MRoPE-safe because
-        <FRAME_TIME> sit outside the contiguous video block.
+        <TIME_SAMPLE> sit outside the contiguous video block.
         """
         tokenizer = self.processor.tokenizer
         frame_tid = tokenizer.convert_tokens_to_ids(self._frame_time_token)
@@ -235,7 +235,7 @@ class GroundingDataset(Dataset):
             )
         pos = (input_ids[0] == vision_start_id).nonzero(as_tuple=True)[0]
         if pos.numel() == 0:
-            raise ValueError("No <|vision_start|> in input_ids; cannot splice <FRAME_TIME>.")
+            raise ValueError("No <|vision_start|> in input_ids; cannot splice frame-time token.")
         p = int(pos[0].item())
 
         prefix = torch.full(

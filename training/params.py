@@ -25,13 +25,13 @@ class ModelArguments:
     time_stamp_token: str = field(default="<TIME_STAMP>")
 
     # TimeEnc (input-side frame-time encoding) config.
-    frame_time_token: str = field(default="<FRAME_TIME>")
+    frame_time_token: str = field(default="<TIME_SAMPLE>")
     time_enc_num_layers: int = field(default=3)
     time_enc_sigma: float = field(default=1.0)
     # Ablation sub-toggles (only effective when enable_time_dist=True).
     time_enc_input: bool = field(default=True)  # False => no input frame-time TimeEnc
     time_enc_teacher_forcing: bool = field(default=True)  # False => no <TIME_STAMP> GT inject
-    # Stage 3 input-side <FRAME_TIME> layout. "prefix" keeps Stage 2 behavior;
+    # Stage 3 input-side <TIME_SAMPLE> layout. "prefix" keeps Stage 2 behavior;
     # "interleave" splits the video block into image-style blocks.
     time_enc_layout: str = field(default="prefix")
 

@@ -65,11 +65,11 @@ def attach_time_dist_head(
             signature breaks that, yielding ``position_ids=None``. Decoding uses
             ``decode_time_spans`` directly, so the patch is unnecessary at eval.
         has_time_enc: if True, also attach the shared ``TimeEnc`` module and
-            register an embedding forward-hook that overwrites ``<FRAME_TIME>``
+            register an embedding forward-hook that overwrites the frame-time token
             (and, during training, ``<TIME_STAMP>``) rows with continuous time
             embeddings. The hook is registered regardless of ``patch_forward`` so
             that ``generate`` / ``decode_time_spans`` also inject frame times.
-        frame_time_token_id: token id of ``<FRAME_TIME>`` (required if has_time_enc).
+        frame_time_token_id: token id of the frame-time token (required if has_time_enc).
         time_enc_sigma: Gaussian std (in bin units) for the soft time targets.
         time_enc_num_layers: depth of the ``TimeEnc`` MLP.
         time_enc_input: if False, skip input frame-time injection (ablation).
@@ -152,7 +152,7 @@ def _make_time_enc_hook(model):
 
 
 def _inject_time_enc(model, input_ids, embeds):
-    """Overwrite <FRAME_TIME> / <TIME_STAMP> embedding rows with TimeEnc outputs.
+    """Overwrite frame-time / <TIME_STAMP> embedding rows with TimeEnc outputs.
 
     Runs inside the embedding forward-hook, so it sees the freshly embedded
     ``inputs_embeds`` [B, L, H]. Frame-time rows are always injected (prefill);
@@ -191,7 +191,7 @@ def _inject_time_enc(model, input_ids, embeds):
             ft_t = torch.as_tensor(ft, device=embeds.device, dtype=torch.float32)
             if pos.numel() != ft_t.numel():
                 warnings.warn(
-                    f"<FRAME_TIME> count ({pos.numel()}) != frame_times "
+                    f"frame-time token count ({pos.numel()}) != frame_times "
                     f"({ft_t.numel()}) for sample {b}; using first "
                     f"{min(pos.numel(), ft_t.numel())}."
                 )

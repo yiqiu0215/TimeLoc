@@ -14,13 +14,13 @@ def build_interleave_video_inputs(
     messages,
     text,
     processor,
-    frame_time_token="<FRAME_TIME>",
-    duplicate_frames=True,
+    frame_time_token="<TIME_SAMPLE>",
 ):
     """Build TimeLens-style interleaved image blocks for Qwen2.5-VL TimeEnc.
 
-    This mirrors the official TimeLens video branch at string level, except the
-    textual timestamp before each visual block is replaced by ``frame_time_token``.
+    Each temporal visual block keeps its two sampled frames. The two sampling
+    timestamps are represented by two ``frame_time_token`` placeholders placed
+    immediately before that visual block.
     """
     _images, videos, video_kwargs = process_vision_info(
         messages, return_video_kwargs=True, return_video_metadata=True
@@ -29,17 +29,12 @@ def build_interleave_video_inputs(
         raise ValueError("Empty videos for interleave path.")
 
     video_tensor, metadata = videos[0]
-    if duplicate_frames:
-        video_tensor = video_tensor.clone()
-        if video_tensor.shape[0] % 2 != 0:
-            raise ValueError("frame count must be even for temporal_patch_size=2.")
-        video_tensor[1::2] = video_tensor[::2]
 
     fps = float(metadata["fps"])
     frame_indices = metadata["frames_indices"]
     if hasattr(frame_indices, "tolist"):
         frame_indices = frame_indices.tolist()
-    frame_times = [float(idx) / fps for idx in frame_indices[::2]]
+    frame_times = [float(idx) / fps for idx in frame_indices]
 
     video_processor = processor.video_processor
     videos_inputs = video_processor(
@@ -49,9 +44,14 @@ def build_interleave_video_inputs(
     merge_length = int(video_processor.merge_size) ** 2
     image_pad_count = (grid_h * grid_w) // merge_length
 
-    if grid_t != len(frame_times):
+    expected_frame_times = 2 * grid_t
+    if expected_frame_times != len(frame_times):
         raise ValueError(
-            f"video_grid_thw temporal dim ({grid_t}) != frame_times ({len(frame_times)})."
+            "interleave frame-time alignment is broken: "
+            f"2 * video_grid_thw temporal dim ({expected_frame_times}) != "
+            f"frame_times ({len(frame_times)}); "
+            f"frames_indices={frame_indices}, grid_t={grid_t}, "
+            f"video_tensor.shape[0]={int(video_tensor.shape[0])}."
         )
 
     image_token = processor.image_token
@@ -59,7 +59,8 @@ def build_interleave_video_inputs(
     vision_start = "<|vision_start|>"
     vision_end = "<|vision_end|>"
     per_block = vision_start + image_token * image_pad_count + vision_end
-    interleaved = "".join(frame_time_token + per_block for _ in range(grid_t))
+    sample_prefix = frame_time_token + frame_time_token
+    interleaved = "".join(sample_prefix + per_block for _ in range(grid_t))
     target = vision_start + video_token + vision_end
     if target not in text:
         raise ValueError("video placeholder block not found in chat-templated text.")
@@ -85,12 +86,19 @@ def build_interleave_video_inputs(
 
     frame_positions = (input_ids == frame_tid).nonzero(as_tuple=True)[0]
     vision_positions = (input_ids == vision_start_id).nonzero(as_tuple=True)[0]
-    if frame_positions.numel() != grid_t or vision_positions.numel() != grid_t:
+    if frame_positions.numel() != expected_frame_times or vision_positions.numel() != grid_t:
         raise ValueError(
-            "<FRAME_TIME>, <|vision_start|>, and image_grid_thw counts must match."
+            f"{frame_time_token}, <|vision_start|>, and image_grid_thw counts must "
+            f"match: {int(frame_positions.numel())}, {int(vision_positions.numel())}, "
+            f"{grid_t}."
         )
-    if not torch.equal(frame_positions + 1, vision_positions):
-        raise ValueError("<FRAME_TIME> must immediately precede each <|vision_start|>.")
+    if not torch.equal(frame_positions[0::2] + 2, vision_positions) or not torch.equal(
+        frame_positions[1::2] + 1, vision_positions
+    ):
+        raise ValueError(
+            f"Two {frame_time_token} tokens must immediately precede each "
+            "<|vision_start|>."
+        )
 
     image_grid_thw = torch.tensor(
         [[1, grid_h, grid_w] for _ in range(grid_t)], dtype=torch.long

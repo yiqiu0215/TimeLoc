@@ -35,14 +35,14 @@ FPS=${FPS:-2}
 
 # --------------- DisTime time modeling (TimeDec + TimeEnc) ----------#
 # Set enable_time_dist=1 (or true) to decode timestamps from the time head and
-# inject continuous frame-time embeddings (<FRAME_TIME>) instead of text.
+# inject continuous frame-time embeddings (<TIME_SAMPLE>) instead of text.
 # Requires processor_path pointing to the trained checkpoint (resized vocab) and
 # a standard Qwen2.5-VL processor base. Default off => original behavior.
 enable_time_dist=${enable_time_dist:-""}
 time_reg_max=${time_reg_max:-32}
 time_head_num_layers=${time_head_num_layers:-3}
 time_stamp_token=${time_stamp_token:-"<TIME_STAMP>"}
-frame_time_token=${frame_time_token:-"<FRAME_TIME>"}
+frame_time_token=${frame_time_token:-"<TIME_SAMPLE>"}
 time_enc_num_layers=${time_enc_num_layers:-3}
 time_enc_sigma=${time_enc_sigma:-1.0}
 time_enc_layout=${time_enc_layout:-prefix}

@@ -15,7 +15,7 @@ fps_max_frames=""
 seed=42
 
 # DisTime-style continuous time modeling: TimeDec (output head) + TimeEnc (input
-# frame-time encoding) + <TIME_STAMP> GT teacher-forcing. Single master switch.
+# sample-time encoding) + <TIME_STAMP> GT teacher-forcing. Single master switch.
 # Default off => identical to the original baseline run.
 # NOTE: when enabled with the TimeLens-7B processor default below, processor_path
 # is auto-switched to model_path (standard Qwen2.5-VL processor, no textual timestamps).
@@ -24,7 +24,7 @@ time_reg_max=32
 time_lambda_dfl=1.0
 time_lambda_iou=1.0
 time_head_num_layers=3
-frame_time_token="<FRAME_TIME>"
+frame_time_token="<TIME_SAMPLE>"
 time_enc_num_layers=3
 time_enc_sigma=1.0
 time_enc_input="true"

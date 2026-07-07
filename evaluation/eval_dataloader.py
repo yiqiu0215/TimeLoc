@@ -89,12 +89,12 @@ def parse_args():
         "--enable_time_dist",
         action="store_true",
         help="DisTime TimeDec+TimeEnc: decode timestamps from the time head and "
-        "inject continuous frame-time embeddings (<FRAME_TIME>) instead of text.",
+        "inject continuous frame-time embeddings (<TIME_SAMPLE>) instead of text.",
     )
     parser.add_argument("--time_reg_max", type=int, default=32)
     parser.add_argument("--time_head_num_layers", type=int, default=3)
     parser.add_argument("--time_stamp_token", default="<TIME_STAMP>")
-    parser.add_argument("--frame_time_token", default="<FRAME_TIME>")
+    parser.add_argument("--frame_time_token", default="<TIME_SAMPLE>")
     parser.add_argument("--time_enc_num_layers", type=int, default=3)
     parser.add_argument("--time_enc_sigma", type=float, default=1.0)
     parser.add_argument(
