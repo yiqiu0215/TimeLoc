@@ -12,6 +12,29 @@ class ModelArguments:
     processor_path: Optional[str] = field(default=None)
     conv_type: Optional[str] = field(default="chatml")
 
+    # DisTime-style continuous time modeling. Single master switch:
+    # enable_time_dist=True turns on TimeDec (output distribution head) + TimeEnc
+    # (input frame-time encoding) + <TIME_STAMP> GT teacher-forcing together.
+    # Default off => identical to the original baseline.
+    # (Renamed from the Stage 1 flag ``enable_time_dist_head``.)
+    enable_time_dist: bool = field(default=False)
+    time_reg_max: int = field(default=32)
+    time_lambda_dfl: float = field(default=1.0)
+    time_lambda_iou: float = field(default=1.0)
+    time_head_num_layers: int = field(default=3)
+    time_stamp_token: str = field(default="<TIME_STAMP>")
+
+    # TimeEnc (input-side frame-time encoding) config.
+    frame_time_token: str = field(default="<FRAME_TIME>")
+    time_enc_num_layers: int = field(default=3)
+    time_enc_sigma: float = field(default=1.0)
+    # Ablation sub-toggles (only effective when enable_time_dist=True).
+    time_enc_input: bool = field(default=True)  # False => no input frame-time TimeEnc
+    time_enc_teacher_forcing: bool = field(default=True)  # False => no <TIME_STAMP> GT inject
+    # Stage 3 input-side <FRAME_TIME> layout. "prefix" keeps Stage 2 behavior;
+    # "interleave" splits the video block into image-style blocks.
+    time_enc_layout: str = field(default="prefix")
+
 
 @dataclass
 class TrainingArguments(HFTrainingArguments):

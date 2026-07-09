@@ -25,6 +25,7 @@ from training.train.train_utils import (
     safe_save_model_for_hf_trainer,
 )
 from training.model_loader import get_config_class, get_model_class, get_processor_class
+from training.model import attach_time_dist_head
 
 local_rank = None
 
@@ -130,7 +131,8 @@ def train():
         )
 
     model_cls = get_model_class(model_args.model_name_or_path)
-    processor_cls = get_processor_class(model_args.model_name_or_path)
+    processor_source = model_args.processor_path or model_args.model_name_or_path
+    processor_cls = get_processor_class(processor_source)
     config_cls = get_config_class(model_args.model_name_or_path)
 
     config = config_cls.from_pretrained(
@@ -211,8 +213,49 @@ def train():
     # `do_resize=False` at the processor call sites instead of persisting it
     # into the saved processor defaults.
     processor = processor_cls.from_pretrained(
-        model_args.model_name_or_path, trust_remote_code=True
+        processor_source, trust_remote_code=True
     )
+
+    # DisTime-style continuous time modeling: TimeDec (output distribution head)
+    # + TimeEnc (input frame-time encoding) + <TIME_STAMP> GT teacher-forcing,
+    # gated by the single master switch enable_time_dist.
+    if getattr(model_args, "enable_time_dist", False):
+        if training_args.lora_enable:
+            raise ValueError(
+                "enable_time_dist is not supported with lora_enable; "
+                "use full fine-tuning (the TimeLens-3B default)."
+            )
+        tokenizer = processor.tokenizer
+        time_token = model_args.time_stamp_token
+        frame_token = model_args.frame_time_token
+        num_added = tokenizer.add_special_tokens(
+            {"additional_special_tokens": [time_token, frame_token]}
+        )
+        if num_added > 0:
+            model.resize_token_embeddings(len(tokenizer))
+        time_token_id = tokenizer.convert_tokens_to_ids(time_token)
+        frame_time_token_id = tokenizer.convert_tokens_to_ids(frame_token)
+        attach_time_dist_head(
+            model,
+            time_token_id=time_token_id,
+            reg_max=model_args.time_reg_max,
+            num_layers=model_args.time_head_num_layers,
+            lambda_dfl=model_args.time_lambda_dfl,
+            lambda_iou=model_args.time_lambda_iou,
+            has_time_enc=True,
+            frame_time_token_id=frame_time_token_id,
+            time_enc_sigma=model_args.time_enc_sigma,
+            time_enc_num_layers=model_args.time_enc_num_layers,
+            time_enc_input=model_args.time_enc_input,
+            time_enc_teacher_forcing=model_args.time_enc_teacher_forcing,
+        )
+        rank0_print(
+            f"Attached time dist+enc: stamp={time_token!r}({time_token_id}) "
+            f"frame={frame_token!r}({frame_time_token_id}) "
+            f"reg_max={model_args.time_reg_max} sigma={model_args.time_enc_sigma} "
+            f"lambda_dfl={model_args.time_lambda_dfl} lambda_iou={model_args.time_lambda_iou} "
+            f"enc_input={model_args.time_enc_input} tf={model_args.time_enc_teacher_forcing}"
+        )
 
     if training_args.bits in [4, 8]:
         from peft.tuners.lora import LoraLayer
@@ -270,6 +313,12 @@ def train():
             )
     else:
         safe_save_model_for_hf_trainer(trainer, output_dir=training_args.output_dir)
+        # The time head adds <TIME_STAMP>/<FRAME_TIME> special tokens; persist the
+        # processor so evaluation can reload the tokenizer with the resized vocabulary.
+        if getattr(model_args, "enable_time_dist", False) and (
+            local_rank == 0 or local_rank == -1
+        ):
+            processor.save_pretrained(training_args.output_dir)
 
     if local_rank == 0 or local_rank == -1:
         import shutil

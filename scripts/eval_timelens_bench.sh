@@ -26,11 +26,43 @@ echo -e "\e[1;36mEvaluating datasets:\e[0m ${datasets[*]}"
 #---------------------------- Model Path ----------------------------#
 # Use model path from environment variable or default
 model_path=${model_path:-"TencentARC/TimeLens-8B"}
+processor_path=${processor_path:-""}
 
 #---------------------------- Configuration ----------------------------#
 min_tokens=${min_tokens:-64}
 total_tokens=${total_tokens:-14336}
 FPS=${FPS:-2}
+
+# --------------- DisTime time modeling (TimeDec + TimeEnc) ----------#
+# Set enable_time_dist=1 (or true) to decode timestamps from the time head and
+# inject continuous frame-time embeddings (<FRAME_TIME>) instead of text.
+# Requires processor_path pointing to the trained checkpoint (resized vocab) and
+# a standard Qwen2.5-VL processor base. Default off => original behavior.
+enable_time_dist=${enable_time_dist:-""}
+time_reg_max=${time_reg_max:-32}
+time_head_num_layers=${time_head_num_layers:-3}
+time_stamp_token=${time_stamp_token:-"<TIME_STAMP>"}
+frame_time_token=${frame_time_token:-"<FRAME_TIME>"}
+time_enc_num_layers=${time_enc_num_layers:-3}
+time_enc_sigma=${time_enc_sigma:-1.0}
+time_enc_layout=${time_enc_layout:-prefix}
+
+time_head_args=()
+case "${enable_time_dist,,}" in
+    1|true|yes|on)
+        time_head_args=(
+            --enable_time_dist
+            --time_reg_max "$time_reg_max"
+            --time_head_num_layers "$time_head_num_layers"
+            --time_stamp_token "$time_stamp_token"
+            --frame_time_token "$frame_time_token"
+            --time_enc_num_layers "$time_enc_num_layers"
+            --time_enc_sigma "$time_enc_sigma"
+            --time_enc_layout "$time_enc_layout"
+        )
+        echo -e "\e[1;36mDisTime (TimeDec+TimeEnc):\e[0m ENABLED (reg_max=$time_reg_max, layers=$time_head_num_layers, sigma=$time_enc_sigma, layout=$time_enc_layout)"
+        ;;
+esac
 
 # ----------------- Save Path -----------------#
 # Prediction Save Path with default or env variable
@@ -64,11 +96,13 @@ for dataset in "${datasets[@]}"; do
             --dataset $dataset \
             --pred_path $current_pred_path \
             --model_path $model_path \
+            --processor_path "$processor_path" \
             --min_tokens $min_tokens \
             --total_tokens $total_tokens \
             --fps $FPS \
             --chunk $CHUNKS \
-            --index $IDX &
+            --index $IDX \
+            "${time_head_args[@]}" &
     done
 
     wait
