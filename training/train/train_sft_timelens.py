@@ -25,6 +25,11 @@ from training.train.train_utils import (
     safe_save_model_for_hf_trainer,
 )
 from training.model_loader import get_config_class, get_model_class, get_processor_class
+from training.lact.config import LaCTConfig, save_lact_config
+from training.lact.qwen25_lact import (
+    enable_lact_parameters,
+    wrap_qwen25_vl_model_with_lact,
+)
 
 local_rank = None
 
@@ -82,6 +87,20 @@ def train():
 
     parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+    lact_config = LaCTConfig.from_args(training_args)
+
+    if lact_config.lact_enable and training_args.lora_enable:
+        raise ValueError("LaCT first version only supports non-LoRA SFT.")
+    if lact_config.lact_enable and training_args.bits != 16:
+        raise ValueError("LaCT first version only supports bits=16.")
+    if (
+        lact_config.lact_enable
+        and lact_config.use_conv_layer
+        and training_args.per_device_train_batch_size != 1
+    ):
+        raise ValueError(
+            "LaCT use_conv_layer=True currently requires per_device_train_batch_size=1."
+        )
 
     if training_args.lora_enable and not training_args.freeze_llm:
         raise ValueError("If `lora_enable` is True, `freeze_llm` must also be True.")
@@ -130,7 +149,8 @@ def train():
         )
 
     model_cls = get_model_class(model_args.model_name_or_path)
-    processor_cls = get_processor_class(model_args.model_name_or_path)
+    processor_source = model_args.processor_path or model_args.model_name_or_path
+    processor_cls = get_processor_class(processor_source)
     config_cls = get_config_class(model_args.model_name_or_path)
 
     config = config_cls.from_pretrained(
@@ -148,12 +168,27 @@ def train():
         **bnb_model_from_pretrained_args,
     )
 
+    if lact_config.lact_enable:
+        model_path_lower = (model_args.model_name_or_path or "").lower()
+        processor_lower = (processor_source or "").lower()
+        if "qwen2.5" not in model_path_lower and "qwen2.5" not in processor_lower and "timelens-3b" not in processor_lower and "timelens-7b" not in processor_lower:
+            raise ValueError("LaCT reproduction in this script is limited to Qwen2.5-VL/TimeLens-3B/7B.")
+        rank0_print(
+            "Wrapping Qwen2.5-VL language layers with LaCT: "
+            f"layers={lact_config.lact_layers}, heads={lact_config.num_lact_heads}, "
+            f"chunk={lact_config.lact_chunk_size}, window={lact_config.window_size}, "
+            f"conv={lact_config.use_conv_layer}"
+        )
+        model = wrap_qwen25_vl_model_with_lact(model, lact_config)
+
     model.config.use_cache = False
     model_to_configure = model
     configure_llm(model_to_configure, training_args)
     configure_vision_tower(
         model_to_configure, training_args, compute_dtype, training_args.device
     )
+    if lact_config.lact_enable and training_args.freeze_llm:
+        enable_lact_parameters(model_to_configure)
 
     if training_args.bits in [4, 8]:
         model.config.torch_dtype = (
@@ -166,12 +201,12 @@ def train():
         model = prepare_model_for_kbit_training(
             model,
             use_gradient_checkpointing=training_args.gradient_checkpointing,
-            gradient_checkpointing_kwargs={"use_reentrant": True},
+            gradient_checkpointing_kwargs={"use_reentrant": False},
         )
 
     if training_args.gradient_checkpointing:
         model.enable_input_require_grads()
-        training_args.gradient_checkpointing_kwargs = {"use_reentrant": True}
+        training_args.gradient_checkpointing_kwargs = {"use_reentrant": False}
 
     if training_args.lora_enable:
         lora_namespan_exclude = training_args.lora_namespan_exclude
@@ -206,12 +241,14 @@ def train():
 
     if training_args.local_rank in (0, -1):
         print_trainable_parameters(model, training_args=training_args)
+        if lact_config.lact_enable:
+            save_lact_config(training_args.output_dir, lact_config)
 
     # `qwen_vl_utils` already resizes frames in the data pipeline, so keep
     # `do_resize=False` at the processor call sites instead of persisting it
     # into the saved processor defaults.
     processor = processor_cls.from_pretrained(
-        model_args.model_name_or_path, trust_remote_code=True
+        processor_source, trust_remote_code=True
     )
 
     if training_args.bits in [4, 8]:
@@ -270,6 +307,8 @@ def train():
             )
     else:
         safe_save_model_for_hf_trainer(trainer, output_dir=training_args.output_dir)
+        if lact_config.lact_enable and (local_rank == 0 or local_rank == -1):
+            save_lact_config(training_args.output_dir, lact_config)
 
     if local_rank == 0 or local_rank == -1:
         import shutil

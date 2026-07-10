@@ -61,6 +61,26 @@ class TrainingArguments(HFTrainingArguments):
     num_lora_modules: int = -1
     use_liger: bool = True
 
+    lact_enable: bool = False
+    num_lact_heads: int = 4
+    lact_chunk_size: int = 2648
+    window_size: int = 2648
+    use_conv_layer: bool = True
+    use_momentum: bool = True
+    use_muon: bool = True
+    learnable_ttt_scale: bool = True
+    w0_w2_low_rank: int = 0
+    use_fused_kernel: bool = False
+    lact_lr: Optional[float] = None
+    lact_layers: str = "0/1/2/4/5/6/8/9/10/12/13/14/16/17/18/20/21/22/24/25/26"
+    qkv_silu: bool = True
+    no_v_silu: bool = False
+    ttt_prenorm: bool = True
+    ttt_nope: bool = False
+    fp32_states: bool = True
+    inter_multi: float = 1.0
+    fw_init_gain: float = 0.5
+
 
 @dataclass
 class GRPOArguments(GRPOConfigTRL):

@@ -9,19 +9,32 @@ processor_path="TencentARC/TimeLens-7B"
 datasets="gemini_refined_data"
 model_id="timelens-3b"
 min_tokens=64
-total_tokens=14336
+total_tokens=8192
 fps=2
-fps_max_frames=""
+fps_max_frames=224
 seed=42
 
 global_batch_size=128
-batch_per_device=2
+batch_per_device=1
 num_devices=2
 epochs=1
-target_size=30000
+target_size=20000
 deepspeed_config="scripts/zero3.json"
-output_root="/root/autodl-tmp/output/TimeLens-3B/sft"
+output_root="/root/autodl-tmp/output/TimeLens-TTT-3B/sft"
 report_to="none"
+
+lact_enable=True
+num_lact_heads=4
+lact_chunk_size=2648
+window_size=2648
+use_conv_layer=True
+use_momentum=True
+use_muon=True
+learnable_ttt_scale=True
+w0_w2_low_rank=0
+use_fused_kernel=False
+lact_lr=1e-5
+lact_layers="0/1/2/4/5/6/8/9/10/12/13/14/16/17/18/20/21/22/24/25/26/28/29/30/32/33/34"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -41,6 +54,18 @@ while [[ $# -gt 0 ]]; do
     --deepspeed_config) deepspeed_config="$2"; shift 2 ;;
     --output_root) output_root="$2"; shift 2 ;;
     --report_to) report_to="$2"; shift 2 ;;
+    --lact_enable) lact_enable="$2"; shift 2 ;;
+    --num_lact_heads) num_lact_heads="$2"; shift 2 ;;
+    --lact_chunk_size) lact_chunk_size="$2"; shift 2 ;;
+    --window_size) window_size="$2"; shift 2 ;;
+    --use_conv_layer) use_conv_layer="$2"; shift 2 ;;
+    --use_momentum) use_momentum="$2"; shift 2 ;;
+    --use_muon) use_muon="$2"; shift 2 ;;
+    --learnable_ttt_scale) learnable_ttt_scale="$2"; shift 2 ;;
+    --w0_w2_low_rank) w0_w2_low_rank="$2"; shift 2 ;;
+    --use_fused_kernel) use_fused_kernel="$2"; shift 2 ;;
+    --lact_lr) lact_lr="$2"; shift 2 ;;
+    --lact_layers) lact_layers="$2"; shift 2 ;;
     *)
       echo "Unknown option: $1"
       exit 1
@@ -53,7 +78,7 @@ if [[ -z "${fps_max_frames}" ]]; then
   fps_max_frames=$((total_tokens / min_tokens * 2))
 fi
 run_tag="$(date +%Y%m%d-%H%M)"
-run_name="sft-${run_tag}_MAXFRAMES-${fps_max_frames}_FPS-${fps}_TOTALtokens-${total_tokens}_MINtokens-${min_tokens}"
+run_name="sft-lact-${run_tag}_MAXFRAMES-${fps_max_frames}_FPS-${fps}_TOTALtokens-${total_tokens}_MINtokens-${min_tokens}_CHUNK-${lact_chunk_size}_WINDOW-${window_size}"
 output_dir="${output_root}/${run_name}"
 
 mkdir -p "${output_dir}"
@@ -85,6 +110,18 @@ deepspeed training/train/train_sft_timelens.py \
   --freeze_vision_tower True \
   --freeze_llm False \
   --freeze_merger False \
+  --lact_enable "${lact_enable}" \
+  --num_lact_heads "${num_lact_heads}" \
+  --lact_chunk_size "${lact_chunk_size}" \
+  --window_size "${window_size}" \
+  --use_conv_layer "${use_conv_layer}" \
+  --use_momentum "${use_momentum}" \
+  --use_muon "${use_muon}" \
+  --learnable_ttt_scale "${learnable_ttt_scale}" \
+  --w0_w2_low_rank "${w0_w2_low_rank}" \
+  --use_fused_kernel "${use_fused_kernel}" \
+  --lact_lr "${lact_lr}" \
+  --lact_layers "${lact_layers}" \
   --learning_rate 1e-5 \
   --merger_lr 1e-5 \
   --weight_decay 0.1 \

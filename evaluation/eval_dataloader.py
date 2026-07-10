@@ -13,15 +13,45 @@ from transformers import AutoModelForImageTextToText, AutoProcessor
 from evaluation.utils import GroundingDataset
 from timelens.dataset.timelens_data import DATASET_DICT
 from timelens.utils import extract_time
+from training.lact.config import DEFAULT_LACT_LAYERS, LaCTConfig, load_lact_config
+from training.lact.generation import generate_with_timelens_lact
+from training.lact.loader import load_qwen25_lact_model
+
+
+def str2bool(value):
+    if isinstance(value, bool):
+        return value
+    value = value.lower()
+    if value in ("true", "1", "yes", "y"):
+        return True
+    if value in ("false", "0", "no", "n"):
+        return False
+    raise argparse.ArgumentTypeError(f"Invalid boolean value: {value}")
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pred_path", required=True, help="Output prediction path")
     parser.add_argument("--model_path", required=True, help="Path to the model")
+    parser.add_argument(
+        "--processor_path",
+        default=None,
+        help="Processor checkpoint path. For TimeLens-3B, set to TencentARC/TimeLens-7B.",
+    )
     parser.add_argument("--min_tokens", type=int, default=16)
     parser.add_argument("--total_tokens", type=int, default=3584)
     parser.add_argument("--fps", type=int, default=2)
+    parser.add_argument("--lact_enable", type=str2bool, default=False)
+    parser.add_argument("--num_lact_heads", type=int, default=4)
+    parser.add_argument("--lact_chunk_size", type=int, default=2648)
+    parser.add_argument("--window_size", type=int, default=2648)
+    parser.add_argument("--use_conv_layer", type=str2bool, default=True)
+    parser.add_argument("--use_momentum", type=str2bool, default=True)
+    parser.add_argument("--use_muon", type=str2bool, default=True)
+    parser.add_argument("--learnable_ttt_scale", type=str2bool, default=True)
+    parser.add_argument("--w0_w2_low_rank", type=int, default=0)
+    parser.add_argument("--use_fused_kernel", type=str2bool, default=False)
+    parser.add_argument("--lact_layers", default=DEFAULT_LACT_LAYERS)
 
     parser.add_argument("--dataset", required=True, help="Dataset name")
     parser.add_argument("--split", default="test")
@@ -60,17 +90,41 @@ if __name__ == "__main__":
         'Device should be set to "auto" for multi-GPU evaluation.'
     )
 
-    # Load model
-    model = AutoModelForImageTextToText.from_pretrained(
-        args.model_path,
-        dtype=torch.bfloat16,
-        attn_implementation="flash_attention_2",
-        device_map=args.device,
-    ).eval()
+    if args.lact_enable:
+        saved_lact_config = load_lact_config(args.model_path)
+        if saved_lact_config is not None:
+            lact_config = LaCTConfig.from_dict(saved_lact_config)
+            print(
+                "Using LaCT config from checkpoint: "
+                f"{os.path.join(args.model_path, 'lact_config.json')}"
+            )
+        else:
+            lact_config = LaCTConfig.from_args(args)
+            print(
+                "Warning: lact_config.json not found; using explicit CLI LaCT args."
+            )
+        model = load_qwen25_lact_model(
+            args.model_path,
+            lact_config=lact_config,
+            torch_dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2",
+            device_map=args.device,
+        )
+    else:
+        model = AutoModelForImageTextToText.from_pretrained(
+            args.model_path,
+            dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2",
+            device_map=args.device,
+        ).eval()
+
+    processor_source = args.processor_path or args.model_path
+    args.processor_path = processor_source
+    args.format_model_path = processor_source
 
     # Load processor (model-specific)
     processor = AutoProcessor.from_pretrained(
-        args.model_path,
+        processor_source,
         padding_side="left",
         do_resize=False,  # For Video Processing, we do not need to resize the video frames again in the processor
         trust_remote_code=True,
@@ -106,14 +160,29 @@ if __name__ == "__main__":
         duration = anno["duration"]
         span = anno["span"]  # ground truth time span
 
-        output_ids = model.generate(
-            **inputs,
-            do_sample=False,
-            temperature=None,
-            top_p=None,
-            top_k=None,
-            max_new_tokens=512,
-        )
+        if args.lact_enable:
+            output_ids = generate_with_timelens_lact(
+                model,
+                input_ids=inputs["input_ids"],
+                attention_mask=inputs.get("attention_mask", None),
+                pixel_values=inputs.get("pixel_values", None),
+                pixel_values_videos=inputs.get("pixel_values_videos", None),
+                image_grid_thw=inputs.get("image_grid_thw", None),
+                video_grid_thw=inputs.get("video_grid_thw", None),
+                second_per_grid_ts=inputs.get("second_per_grid_ts", None),
+                max_new_tokens=512,
+                eos_token_id=processor.tokenizer.eos_token_id,
+                pad_token_id=processor.tokenizer.pad_token_id,
+            )
+        else:
+            output_ids = model.generate(
+                **inputs,
+                do_sample=False,
+                temperature=None,
+                top_p=None,
+                top_k=None,
+                max_new_tokens=512,
+            )
 
         generated_ids_trimmed = [
             out_ids[len(in_ids) :]
