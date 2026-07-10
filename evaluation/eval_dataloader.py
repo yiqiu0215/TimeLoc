@@ -13,7 +13,10 @@ from transformers import AutoModelForImageTextToText, AutoProcessor
 from evaluation.utils import GroundingDataset
 from timelens.dataset.timelens_data import DATASET_DICT
 from timelens.utils import extract_time
-from training.model.time_dist_wrapper import attach_time_dist_head, decode_time_spans
+from training.model.time_dist_wrapper import (
+    attach_time_dist_head,
+    generate_with_time_refinement,
+)
 
 
 def _load_time_head_weights(model, model_path):
@@ -205,25 +208,31 @@ if __name__ == "__main__":
         span = anno["span"]  # ground truth time span
         frame_times = data.get("frame_times")
 
-        # TimeEnc: stash frame times so the embedding hook injects them during
-        # the prefill of generate (consistent with training).
-        if args.enable_time_dist and getattr(model, "_has_time_enc", False):
-            model._tenc_frame_times = [frame_times] if frame_times is not None else None
-            model._tenc_time_gt = None
-            model._tenc_duration = [float(duration)]
-
-        output_ids = model.generate(
-            **inputs,
-            do_sample=False,
-            temperature=None,
-            top_p=None,
-            top_k=None,
-            max_new_tokens=512,
-        )
-
-        if args.enable_time_dist and getattr(model, "_has_time_enc", False):
-            model._tenc_frame_times = None
-            model._tenc_duration = None
+        if args.enable_time_dist:
+            vision_kwargs = {
+                k: v
+                for k, v in inputs.items()
+                if k not in ("input_ids", "attention_mask")
+            }
+            output_ids, timestamps = generate_with_time_refinement(
+                model,
+                input_ids=inputs["input_ids"],
+                attention_mask=inputs["attention_mask"],
+                duration=duration,
+                time_token_id=time_token_id,
+                frame_times=frame_times,
+                max_new_tokens=512,
+                **vision_kwargs,
+            )
+        else:
+            output_ids = model.generate(
+                **inputs,
+                do_sample=False,
+                temperature=None,
+                top_p=None,
+                top_k=None,
+                max_new_tokens=512,
+            )
 
         generated_ids_trimmed = [
             out_ids[len(in_ids) :]
@@ -238,24 +247,6 @@ if __name__ == "__main__":
 
         # Parse the answer
         if args.enable_time_dist:
-            # Decode timestamps from the time head at <TIME_STAMP> positions,
-            # over the full generated sequence (prompt + answer). frame_times are
-            # re-injected via the embedding hook during this forward.
-            vision_kwargs = {
-                k: v
-                for k, v in inputs.items()
-                if k not in ("input_ids", "attention_mask")
-            }
-            full_attention_mask = torch.ones_like(output_ids)
-            timestamps = decode_time_spans(
-                model,
-                input_ids=output_ids,
-                attention_mask=full_attention_mask,
-                duration=duration,
-                time_token_id=time_token_id,
-                frame_times=frame_times,
-                **vision_kwargs,
-            )
             if len(timestamps) != 0:
                 print(f"Time-head timestamps: {timestamps}")
             else:

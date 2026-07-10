@@ -8,7 +8,10 @@ from training.model.time_head import (
     encode_spans,
     generate_gaussian_peaks,
 )
-from training.model.time_dist_wrapper import attach_time_dist_head
+from training.model.time_dist_wrapper import (
+    attach_time_dist_head,
+    generate_with_time_refinement,
+)
 
 __all__ = [
     "Project",
@@ -20,4 +23,5 @@ __all__ = [
     "encode_spans",
     "generate_gaussian_peaks",
     "attach_time_dist_head",
+    "generate_with_time_refinement",
 ]

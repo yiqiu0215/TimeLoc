@@ -22,8 +22,6 @@ import warnings
 
 import torch
 
-from transformers.modeling_outputs import CausalLMOutputWithPast
-
 from training.model.time_head import (
     Project,
     TimeDec,
@@ -244,12 +242,13 @@ def _time_dist_forward(self, *args, **kwargs):
         self._tenc_time_gt = time_gt
         self._tenc_duration = duration
 
-    outputs = self._orig_forward(*args, **kwargs)
-
-    if getattr(self, "_has_time_enc", False):
-        self._tenc_frame_times = None
-        self._tenc_time_gt = None
-        self._tenc_duration = None
+    try:
+        outputs = self._orig_forward(*args, **kwargs)
+    finally:
+        if getattr(self, "_has_time_enc", False):
+            self._tenc_frame_times = None
+            self._tenc_time_gt = None
+            self._tenc_duration = None
 
     # If we cannot supervise the head (no labels / no time targets / no input_ids),
     # return the base outputs untouched.
@@ -316,18 +315,17 @@ def _time_dist_forward(self, *args, **kwargs):
     dur = torch.stack(
         [d.to(feats.device) for d in dur_per_stamp]
     ).float()  # [N_stamp]
-    dur = dur.clamp(min=1.0)
+    dur = dur.clamp(min=1e-6)
 
-    # DFL targets: clamp to [0, duration-1] then normalize to [0, reg_max].
+    # DFL targets use the inclusive [0, duration] coordinate range.
     gt_clamp = torch.clamp(target_spans, min=0.0)
-    gt_clamp = torch.minimum(gt_clamp, (dur - 1.0).unsqueeze(1))  # [N_stamp, 2]
+    gt_clamp = torch.minimum(gt_clamp, dur.unsqueeze(1))  # [N_stamp, 2]
     gt_bin = gt_clamp / dur.unsqueeze(1) * reg_max  # [N_stamp, 2]
 
     logits = self.time_dec(feats).float()  # [N_stamp, 2*(reg_max+1)]
     loss_dfl = distribution_focal_loss(
         logits.reshape(-1, reg_max + 1),
         gt_bin.reshape(-1),
-        avg_factor=reg_max,
     )
 
     pred_bin = self.time_project(logits)  # [N_stamp, 2]
@@ -384,17 +382,20 @@ def decode_time_spans(
         model._tenc_time_gt = None
         model._tenc_duration = [float(duration)]
     forward = getattr(model, "_orig_forward", model.forward)
-    outputs = forward(
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        output_hidden_states=True,
-        return_dict=True,
-        use_cache=False,
-        **vision_kwargs,
-    )
-    if getattr(model, "_has_time_enc", False):
-        model._tenc_frame_times = None
-        model._tenc_duration = None
+    try:
+        outputs = forward(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+            return_dict=True,
+            use_cache=False,
+            **vision_kwargs,
+        )
+    finally:
+        if getattr(model, "_has_time_enc", False):
+            model._tenc_frame_times = None
+            model._tenc_time_gt = None
+            model._tenc_duration = None
     hidden = outputs.hidden_states[-1]  # [1, L, H]
 
     time_mask = input_ids[:, 1:] == time_token_id
@@ -409,3 +410,195 @@ def decode_time_spans(
     dur = float(duration)
     pred_sec = (pred_bin / reg_max * dur).tolist()
     return [[float(s), float(e)] for s, e in pred_sec]
+
+
+@torch.no_grad()
+def generate_with_time_refinement(
+    model,
+    input_ids,
+    attention_mask,
+    duration,
+    time_token_id,
+    frame_times=None,
+    max_new_tokens=512,
+    eos_token_id=None,
+    **vision_kwargs,
+):
+    """Greedy decode with online ``<TIME_STAMP>`` decode-to-re-encode.
+
+    The first forward is a multimodal prefill. Later forwards use the native
+    ``prepare_inputs_for_generation`` and KV cache. When the selected token is
+    ``<TIME_STAMP>``, its preceding hidden state is decoded by TimeDec; the
+    predicted continuous span is encoded by TimeEnc and used as
+    ``inputs_embeds`` when that timestamp token is consumed on the next step.
+    """
+    if input_ids.ndim != 2 or input_ids.size(0) != 1:
+        raise AssertionError(
+            "generate_with_time_refinement currently requires batch_size == 1."
+        )
+    if attention_mask.ndim != 2 or attention_mask.size(0) != 1:
+        raise AssertionError(
+            "generate_with_time_refinement currently requires batch_size == 1."
+        )
+    if not getattr(model, "_has_time_enc", False):
+        raise ValueError("Online time refinement requires an attached TimeEnc.")
+
+    reg_max = int(model._time_reg_max)
+    if torch.is_tensor(duration):
+        duration_value = float(duration.reshape(-1)[0].item())
+    else:
+        duration_value = float(duration)
+    duration_value = max(duration_value, 1e-6)
+
+    if eos_token_id is None:
+        eos_candidates = [
+            getattr(getattr(model, "generation_config", None), "eos_token_id", None),
+            getattr(getattr(model, "config", None), "eos_token_id", None),
+            getattr(
+                getattr(getattr(model, "config", None), "text_config", None),
+                "eos_token_id",
+                None,
+            ),
+        ]
+    else:
+        eos_candidates = [eos_token_id]
+
+    eos_ids = set()
+    for candidate in eos_candidates:
+        if candidate is None:
+            continue
+        if torch.is_tensor(candidate):
+            candidate_ids = {int(x) for x in candidate.reshape(-1).tolist()}
+        elif isinstance(candidate, (list, tuple, set)):
+            candidate_ids = {int(x) for x in candidate}
+        else:
+            candidate_ids = {int(candidate)}
+        if candidate_ids:
+            eos_ids = candidate_ids
+            break
+    if not eos_ids:
+        warnings.warn(
+            "No EOS token id found in the explicit argument, generation_config, "
+            "config, or config.text_config; decoding will stop only at "
+            f"max_new_tokens={int(max_new_tokens)}.",
+            RuntimeWarning,
+        )
+
+    generated_ids = input_ids.clone()
+    predicted_spans = []
+    pending_time_embedding = None
+    prefill_vision_kwargs = {
+        key: value
+        for key, value in vision_kwargs.items()
+        if key not in {"input_ids", "attention_mask", "past_key_values"}
+    }
+
+    # TimeEnc frame injection is scoped to the multimodal prefill only. No GT
+    # is ever stashed during inference and all temporary state is cleared.
+    model._tenc_frame_times = [frame_times] if frame_times is not None else None
+    model._tenc_time_gt = None
+    model._tenc_duration = [duration_value]
+    try:
+        outputs = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+            return_dict=True,
+            use_cache=True,
+            **prefill_vision_kwargs,
+        )
+    finally:
+        model._tenc_frame_times = None
+        model._tenc_time_gt = None
+        model._tenc_duration = None
+
+    past_key_values = outputs.past_key_values
+    cache_position = torch.tensor(
+        [input_ids.size(1)], device=input_ids.device, dtype=torch.long
+    )
+    prepare_state = {}
+    rope_deltas = getattr(outputs, "rope_deltas", None)
+    if rope_deltas is not None:
+        prepare_state["rope_deltas"] = rope_deltas
+
+    for _ in range(int(max_new_tokens)):
+        last_hidden = outputs.hidden_states[-1][:, -1, :]
+        next_token = outputs.logits[:, -1, :].argmax(dim=-1)
+        generated_ids = torch.cat([generated_ids, next_token[:, None]], dim=1)
+
+        if int(next_token.item()) == int(time_token_id):
+            time_dec_dtype = next(model.time_dec.parameters()).dtype
+            logits_time = model.time_dec(
+                last_hidden.to(dtype=time_dec_dtype)
+            ).float()
+            pred_bin = model.time_project(logits_time).float().clamp(
+                0.0, float(reg_max)
+            )
+            pred_sec = pred_bin / float(reg_max) * duration_value
+            span = pred_sec[0].detach().float().tolist()
+            predicted_spans.append([float(span[0]), float(span[1])])
+            pending_time_embedding = encode_spans(
+                model.time_enc,
+                pred_sec,
+                duration_value,
+                reg_max,
+                model._time_enc_sigma,
+            )
+            embedding_weight = model.get_input_embeddings().weight
+            pending_time_embedding = pending_time_embedding.to(
+                device=embedding_weight.device,
+                dtype=embedding_weight.dtype,
+            )
+
+        # Decode the timestamp before checking EOS so a timestamp token that is
+        # also terminal is still retained in predicted_spans.
+        if int(next_token.item()) in eos_ids:
+            break
+
+        attention_mask = torch.cat(
+            [attention_mask, attention_mask.new_ones((1, 1))], dim=1
+        )
+        prepare_kwargs = {
+            "input_ids": generated_ids,
+            "past_key_values": past_key_values,
+            "attention_mask": attention_mask,
+            "use_cache": True,
+            "cache_position": cache_position,
+        }
+        prepare_kwargs.update(prepare_state)
+        try:
+            model_inputs = model.prepare_inputs_for_generation(**prepare_kwargs)
+        except TypeError as exc:
+            # Older Transformers versions may not expose cache_position in the
+            # preparation signature; let that method construct its own state.
+            if "cache_position" not in str(exc):
+                raise
+            prepare_kwargs.pop("cache_position")
+            model_inputs = model.prepare_inputs_for_generation(**prepare_kwargs)
+
+        current_cache_position = model_inputs.get("cache_position")
+        if pending_time_embedding is not None:
+            model_inputs["inputs_embeds"] = pending_time_embedding[:, None, :]
+            model_inputs.pop("input_ids", None)
+            pending_time_embedding = None
+
+        # Keep native position/cache fields intact. rope_deltas is retained as
+        # model-specific generation state if the native method returns it.
+        if "rope_deltas" in model_inputs:
+            prepare_state["rope_deltas"] = model_inputs["rope_deltas"]
+
+        outputs = model(
+            **model_inputs,
+            output_hidden_states=True,
+            return_dict=True,
+        )
+        past_key_values = outputs.past_key_values
+        rope_deltas = getattr(outputs, "rope_deltas", None)
+        if rope_deltas is not None:
+            prepare_state["rope_deltas"] = rope_deltas
+        if current_cache_position is None:
+            cache_position = cache_position + 1
+        else:
+            cache_position = current_cache_position[-1:] + 1
+
+    return generated_ids, predicted_spans

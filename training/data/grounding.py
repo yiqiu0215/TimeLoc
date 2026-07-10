@@ -121,6 +121,13 @@ def _align_spans_to_sampled_timestamps(spans, sampled_timestamps):
     return aligned_spans
 
 
+def _time_gt_spans(spans, sampled_timestamps, enable_time_dist):
+    """Keep continuous GT for DisTime and sampled alignment for text baselines."""
+    if enable_time_dist:
+        return [list(span) for span in spans]
+    return _align_spans_to_sampled_timestamps(spans, sampled_timestamps)
+
+
 def _is_qwen2_timelens_model(model_path: str) -> bool:
     if not model_path:
         return False
@@ -417,7 +424,9 @@ class GroundingDataset(Dataset):
                 self.processor,
                 frame_time_token=self._frame_time_token,
             )
-            spans = _align_spans_to_sampled_timestamps(spans, sampled_timestamps)
+            spans = _time_gt_spans(
+                spans, sampled_timestamps, self._enable_time_dist
+            )
             inputs["input_ids"] = inputs["input_ids"][0]
             inputs["labels"] = preprocess(
                 inputs["input_ids"],
@@ -460,7 +469,9 @@ class GroundingDataset(Dataset):
                 sampled_timestamps = _extract_qwen2_timelens_sampled_timestamps(
                     videos_with_meta
                 )
-                spans = _align_spans_to_sampled_timestamps(spans, sampled_timestamps)
+                spans = _time_gt_spans(
+                    spans, sampled_timestamps, self._enable_time_dist
+                )
             else:
                 images, videos, video_kwargs = process_vision_info(
                     messages,
@@ -523,8 +534,8 @@ class GroundingDataset(Dataset):
             self.model_args.conv_type,
         )
         if self._enable_time_dist:
-            # spans here are already aligned to the sampled timestamps (seconds),
-            # matching what the baseline text answer would have targeted.
+            # DisTime keeps the original continuous annotation span, even though
+            # visual frames are sampled at discrete timestamps.
             inputs["time_gt"] = [[float(s), float(e)] for s, e in spans]
             inputs["duration"] = float(anno["duration"])
         if use_time_enc:

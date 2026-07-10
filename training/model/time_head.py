@@ -94,11 +94,10 @@ def generate_gaussian_peaks(length, peaks, sigma):
     return g
 
 
-def _seconds_to_bins(t, duration, reg_max, max_offset=0.0):
-    """Clamp seconds to ``[0, duration - max_offset]`` then map to ``[0, reg_max]``."""
-    duration = max(float(duration), 1.0)
-    t = t.float().clamp(min=0.0)
-    t = torch.minimum(t, t.new_full(t.shape, duration - max_offset))
+def _seconds_to_bins(t, duration, reg_max):
+    """Map seconds in ``[0, duration]`` continuously to ``[0, reg_max]``."""
+    duration = max(float(duration), 1e-6)
+    t = t.float().clamp(min=0.0, max=duration)
     return t / duration * reg_max
 
 
@@ -110,7 +109,7 @@ def encode_frame_times(time_enc, frame_times, duration, reg_max, sigma):
     so it matches the shared ``TimeEnc`` input.
     """
     dtype = next(time_enc.parameters()).dtype
-    t_bin = _seconds_to_bins(frame_times, duration, reg_max, max_offset=0.0)  # [T]
+    t_bin = _seconds_to_bins(frame_times, duration, reg_max)  # [T]
     g = generate_gaussian_peaks(reg_max + 1, t_bin, sigma)  # [T, reg_max + 1]
     g = torch.cat([g, g], dim=-1).to(dtype)  # [T, 2 * (reg_max + 1)]
     return time_enc(g)
@@ -119,13 +118,13 @@ def encode_frame_times(time_enc, frame_times, duration, reg_max, sigma):
 def encode_spans(time_enc, spans, duration, reg_max, sigma):
     """Encode ``[start, end]`` GT spans into ``[N, hidden]`` time embeddings.
 
-    ``gaussian(start) ⊕ gaussian(end)`` -> width ``2 * (reg_max + 1)``. Clamping to
-    ``duration - 1`` matches the DFL/decode mapping in the time head (self-consistent).
+    The concatenated Gaussian distributions have width ``2 * (reg_max + 1)``.
+    Both endpoints use the inclusive ``[0, duration]`` coordinate range.
     """
     dtype = next(time_enc.parameters()).dtype
     spans = spans.reshape(-1, 2)
-    s_bin = _seconds_to_bins(spans[:, 0], duration, reg_max, max_offset=1.0)  # [N]
-    e_bin = _seconds_to_bins(spans[:, 1], duration, reg_max, max_offset=1.0)  # [N]
+    s_bin = _seconds_to_bins(spans[:, 0], duration, reg_max)  # [N]
+    e_bin = _seconds_to_bins(spans[:, 1], duration, reg_max)  # [N]
     gs = generate_gaussian_peaks(reg_max + 1, s_bin, sigma)  # [N, reg_max + 1]
     ge = generate_gaussian_peaks(reg_max + 1, e_bin, sigma)  # [N, reg_max + 1]
     g = torch.cat([gs, ge], dim=-1).to(dtype)  # [N, 2 * (reg_max + 1)]
@@ -189,11 +188,18 @@ def distribution_focal_loss(pred, label, weight=None, reduction="mean", avg_fact
         pred: [M, reg_max + 1] logits (M = 2 * N_stamp, start/end interleaved).
         label: [M] continuous bin targets in [0, reg_max].
     """
-    disl = label.long()
-    disr = disl + 1
+    num_bins = pred.size(-1)
+    max_label = num_bins - 1
+    label = label.float().clamp(0.0, float(max_label))
+    disl = torch.floor(label).long()
+    disr = torch.clamp(disl + 1, max=max_label)
 
     wl = disr.float() - label
     wr = label - disl.float()
+
+    same_bin = disl == disr
+    wl = torch.where(same_bin, torch.ones_like(wl), wl)
+    wr = torch.where(same_bin, torch.zeros_like(wr), wr)
 
     loss = F.cross_entropy(pred, disl, reduction="none") * wl + F.cross_entropy(
         pred, disr, reduction="none"
