@@ -1,0 +1,18 @@
+{
+  "architectures": [
+    "FakeBaseModel"
+  ],
+  "dtype": "float32",
+  "hidden_size": 8,
+  "image_token_id": 4,
+  "model_type": "fake_qwen25_vl",
+  "pad_token_id": 0,
+  "transformers_version": "4.57.1",
+  "video_token_id": 2,
+  "vision_config": {
+    "spatial_merge_size": 2
+  },
+  "vision_end_token_id": 3,
+  "vision_start_token_id": 1,
+  "vocab_size": 2048
+}
