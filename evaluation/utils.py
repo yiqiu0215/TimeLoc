@@ -60,11 +60,18 @@ class GroundingDataset(Dataset):
         self._is_qwen2_timelens = _is_qwen2_timelens_model(self._format_model_path)
         self._is_qwen2 = _is_qwen2_model(self._format_model_path)
         self._is_qwen3 = _is_qwen3_model(self._format_model_path)
-        self._is_time_refine = is_qwen25_timelens_3b(
-            getattr(args, "model_id", None),
-            getattr(args, "model_path", None),
-            getattr(args, "processor_path", None),
-        )
+        explicit_time_refine_target = getattr(args, "time_refine_target", None)
+        if explicit_time_refine_target is not None:
+            # The evaluation entry point's checkpoint determination is
+            # authoritative; only fall back to name-based detection when
+            # older callers never set this field at all.
+            self._is_time_refine = bool(explicit_time_refine_target)
+        else:
+            self._is_time_refine = is_qwen25_timelens_3b(
+                getattr(args, "model_id", None),
+                getattr(args, "model_path", None),
+                getattr(args, "processor_path", None),
+            )
         if self._is_qwen2_timelens:
             # Qwen2.5-TimeLens uses interleaved textual timestamps.
             self.prompt = GROUNDER_PROMPT_TEXT_TIMESTAMP

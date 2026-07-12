@@ -5,6 +5,13 @@ from transformers import PretrainedConfig
 from training.modeling.special_tokens import TIME_BIN_COUNT
 
 
+def _non_negative_int(name: str, value: int) -> int:
+    value = int(value)
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative, got {value}.")
+    return value
+
+
 class TimeLensRefineConfig(PretrainedConfig):
     model_type = "timelens_refine"
 
@@ -35,6 +42,13 @@ class TimeLensRefineConfig(PretrainedConfig):
         lambda_ntp: float = 1.0,
         lambda_diou: float = 1.0,
         lambda_reg: float = 2.0,
+        inference_max_background_gap: int = 2,
+        inference_candidate_expansion: int = 4,
+        inference_boundary_radius: int = 4,
+        train_start_left_context: int = 4,
+        train_start_right_context: int = 4,
+        train_end_left_context: int = 4,
+        train_end_right_context: int = 4,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -64,6 +78,27 @@ class TimeLensRefineConfig(PretrainedConfig):
         self.lambda_ntp = float(lambda_ntp)
         self.lambda_diou = float(lambda_diou)
         self.lambda_reg = float(lambda_reg)
+        self.inference_max_background_gap = _non_negative_int(
+            "inference_max_background_gap", inference_max_background_gap
+        )
+        self.inference_candidate_expansion = _non_negative_int(
+            "inference_candidate_expansion", inference_candidate_expansion
+        )
+        self.inference_boundary_radius = _non_negative_int(
+            "inference_boundary_radius", inference_boundary_radius
+        )
+        self.train_start_left_context = _non_negative_int(
+            "train_start_left_context", train_start_left_context
+        )
+        self.train_start_right_context = _non_negative_int(
+            "train_start_right_context", train_start_right_context
+        )
+        self.train_end_left_context = _non_negative_int(
+            "train_end_left_context", train_end_left_context
+        )
+        self.train_end_right_context = _non_negative_int(
+            "train_end_right_context", train_end_right_context
+        )
 
     @classmethod
     def from_base_model_config(

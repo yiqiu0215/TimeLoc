@@ -2,9 +2,7 @@
 # Original code copyright (c) 2025 Ye Liu. Licensed under the BSD-3-Clause License.
 
 import argparse
-import json
 import os
-from pathlib import Path
 
 import nncore
 import torch
@@ -15,13 +13,11 @@ from transformers import AutoModelForImageTextToText, AutoProcessor
 from evaluation.utils import GroundingDataset
 from timelens.dataset.timelens_data import DATASET_DICT
 from timelens.utils import extract_time
+from training.model_loader import is_time_refine_checkpoint
 from training.modeling.modeling_timelens_refine import (
     TimeLensRefineForConditionalGeneration,
 )
-from training.modeling.special_tokens import (
-    is_qwen25_timelens_3b,
-    register_time_refine_tokens,
-)
+from training.modeling.special_tokens import register_time_refine_tokens
 
 
 def parse_args():
@@ -62,19 +58,6 @@ def parse_args():
     return args
 
 
-def _is_time_refine_checkpoint(args) -> bool:
-    if is_qwen25_timelens_3b(args.model_id, args.model_path, args.processor_path):
-        return True
-    config_path = Path(args.model_path) / "config.json"
-    if not config_path.exists():
-        return False
-    try:
-        with config_path.open("r", encoding="utf-8") as reader:
-            return json.load(reader).get("model_type") == "timelens_refine"
-    except (OSError, ValueError):
-        return False
-
-
 if __name__ == "__main__":
     args = parse_args()
 
@@ -92,7 +75,11 @@ if __name__ == "__main__":
         'Device should be set to "auto" for multi-GPU evaluation.'
     )
 
-    time_refine_target = _is_time_refine_checkpoint(args)
+    time_refine_target = is_time_refine_checkpoint(
+        args.model_path,
+        model_id=args.model_id,
+        processor_path=args.processor_path,
+    )
 
     # Load model
     if time_refine_target:

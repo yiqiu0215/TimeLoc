@@ -682,9 +682,9 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
                 build_candidate_windows(
                     parsed.labels,
                     foreground_scores=foreground_scores,
-                    max_background_gap=2,
-                    expansion=4,
-                    boundary_radius=4,
+                    max_background_gap=self.config.inference_max_background_gap,
+                    expansion=self.config.inference_candidate_expansion,
+                    boundary_radius=self.config.inference_boundary_radius,
                 )
             )
             coarse_labels.append(parsed.labels)
@@ -936,14 +936,14 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
             start_window = build_training_boundary_window(
                 timestamps.detach().cpu(),
                 float(gt_start[batch_index].item()),
-                left_context=4,
-                right_context=4,
+                left_context=self.config.train_start_left_context,
+                right_context=self.config.train_start_right_context,
             )
             end_window = build_training_boundary_window(
                 timestamps.detach().cpu(),
                 float(gt_end[batch_index].item()),
-                left_context=4,
-                right_context=4,
+                left_context=self.config.train_end_left_context,
+                right_context=self.config.train_end_right_context,
             )
             start = self._make_branch_groups(blocks, start_window, labels, bins)
             end = self._make_branch_groups(blocks, end_window, labels, bins)

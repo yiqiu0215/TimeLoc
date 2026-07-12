@@ -87,7 +87,7 @@ deepspeed training/train/train_sft_timelens.py \
   --freeze_merger False \
   --learning_rate 1e-5 \
   --merger_lr 1e-5 \
-  --time_token_lr 5e-5 \
+  --time_token_lr 2e-5 \
   --time_refine_lr 1e-4 \
   --weight_decay 0.1 \
   --warmup_ratio 0.03 \
