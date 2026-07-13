@@ -70,11 +70,6 @@ class TimeTokenPacker:
         self.pad_token_id = int(pad_token_id)
         self.position_id_builder = position_id_builder
 
-    def _embed_ids(self, token_ids: list[int], device, dtype) -> torch.Tensor:
-        ids = torch.tensor(token_ids, dtype=torch.long, device=device).unsqueeze(0)
-        embeddings = self.embedding_layer(ids)[0]
-        return embeddings.to(dtype=dtype)
-
     @staticmethod
     def _normalize_grid(video_grid_thw: torch.Tensor, batch_size: int) -> torch.Tensor:
         grid = torch.as_tensor(video_grid_thw, dtype=torch.long)
@@ -246,6 +241,19 @@ class TimeTokenPacker:
         if labels is not None and labels.shape != input_ids.shape:
             raise ValueError("labels must have the same shape as input_ids.")
 
+        special_token_ids = torch.tensor(
+            [
+                self.vision_start_token_id,
+                self.vision_end_token_id,
+                *self.time_token_ids,
+            ],
+            dtype=torch.long,
+            device=input_embeddings.device,
+        ).unsqueeze(0)
+        special_token_embeddings = self.embedding_layer(special_token_ids)[0].to(
+            dtype=input_embeddings.dtype
+        )
+
         visual_samples = self._split_visual_embeddings(visual_embeddings, grid.cpu())
         sample_embeds = []
         sample_ids = []
@@ -273,14 +281,23 @@ class TimeTokenPacker:
             embeds = input_embeddings[batch_index][active]
             current_labels = labels[batch_index][active] if labels is not None else None
             video_positions = (ids == self.video_token_id).nonzero(as_tuple=True)[0]
-            if video_positions.numel() != 1:
+            if video_positions.numel() == 0:
                 raise ValueError(
-                    "TimeRefine requires exactly one <|video_pad|> placeholder per sample, "
-                    f"got {video_positions.numel()}."
+                    "TimeRefine requires one expanded <|video_pad|> span per sample."
                 )
-            video_position = int(video_positions.item())
-            start = video_position - 1
-            end = video_position + 1
+            expected_video_tokens = int(visual_samples[batch_index].shape[0])
+            if video_positions.numel() not in (1, expected_video_tokens):
+                raise ValueError(
+                    "The <|video_pad|> count must be one legacy placeholder or match "
+                    f"the visual token count: got {video_positions.numel()}, "
+                    f"expected {expected_video_tokens}."
+                )
+            first_video_position = int(video_positions[0].item())
+            last_video_position = int(video_positions[-1].item())
+            if last_video_position - first_video_position + 1 != video_positions.numel():
+                raise ValueError("TimeRefine requires one contiguous <|video_pad|> span.")
+            start = first_video_position - 1
+            end = last_video_position + 1
             if (
                 start < 0
                 or end >= ids.numel()
@@ -288,8 +305,8 @@ class TimeTokenPacker:
                 or int(ids[end]) != self.vision_end_token_id
             ):
                 raise ValueError(
-                    "The video placeholder must be exactly "
-                    "<|vision_start|><|video_pad|><|vision_end|>."
+                    "The video placeholder span must be enclosed by exactly one "
+                    "<|vision_start|> and <|vision_end|>."
                 )
 
             prefix_embeds = embeds[:start]
@@ -319,15 +336,9 @@ class TimeTokenPacker:
                 visual_offset += per_block
                 q = int(bins[block_index].item())
                 time_id = self.time_token_ids[q]
-                start_embed = self._embed_ids(
-                    [self.vision_start_token_id],
-                    embeds.device,
-                    embeds.dtype,
-                )
-                end_embed = self._embed_ids(
-                    [self.vision_end_token_id], embeds.device, embeds.dtype
-                )
-                time_embed = self._embed_ids([time_id], embeds.device, embeds.dtype)
+                start_embed = special_token_embeddings[0:1]
+                end_embed = special_token_embeddings[1:2]
+                time_embed = special_token_embeddings[2 + q : 3 + q]
                 block_embeds.extend([start_embed, visual_block, end_embed, time_embed])
                 block_ids.extend(
                     [

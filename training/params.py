@@ -65,7 +65,7 @@ class TrainingArguments(HFTrainingArguments):
     )
     time_refine_lr: Optional[float] = field(
         default=None,
-        metadata={"help": "Learning rate for TimeProj and TimeRefineHead."},
+        metadata={"help": "Learning rate for Coarse2Refine TimeProj and head."},
     )
     lora_namespan_exclude: Optional[str] = field(
         default=None,
@@ -167,7 +167,9 @@ class DataArguments:
 
     time_bin_count: int = field(
         default=301,
-        metadata={"help": "Number of normalized time bins used by TimeRefine."},
+        metadata={
+            "help": "Number of normalized time bins used by Coarse2Refine."
+        },
     )
     frame_label_coverage_threshold: float = field(
         default=0.5,

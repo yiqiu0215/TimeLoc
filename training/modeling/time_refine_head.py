@@ -1,5 +1,4 @@
-from dataclasses import dataclass
-from typing import Sequence
+from typing import NamedTuple, Sequence
 
 import torch
 import torch.nn as nn
@@ -82,8 +81,7 @@ def _straight_through_round(values: torch.Tensor) -> torch.Tensor:
     return clipped + (rounded - clipped).detach()
 
 
-@dataclass
-class TimeRefineHeadOutput:
+class TimeRefineHeadOutput(NamedTuple):
     pred_start_q: torch.Tensor
     pred_end_q: torch.Tensor
     pred_start_q_continuous: torch.Tensor

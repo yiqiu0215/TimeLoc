@@ -55,7 +55,7 @@ class HybridDataCollator:
                 missing = [key for key in time_refine_keys if key not in sample]
                 if missing:
                     raise ValueError(
-                        "TimeRefine batch samples must contain the same metadata fields; "
+                        "Coarse2Refine batch samples must contain the same metadata fields; "
                         f"missing={missing}."
                     )
                 lengths = {

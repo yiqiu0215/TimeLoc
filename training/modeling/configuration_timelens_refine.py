@@ -12,8 +12,8 @@ def _non_negative_int(name: str, value: int) -> int:
     return value
 
 
-class TimeLensRefineConfig(PretrainedConfig):
-    model_type = "timelens_refine"
+class Coarse2RefineConfig(PretrainedConfig):
+    model_type = "coarse2refine"
 
     def __init__(
         self,
@@ -32,6 +32,7 @@ class TimeLensRefineConfig(PretrainedConfig):
         pad_token_id: Optional[int] = None,
         spatial_merge_size: int = 2,
         llm_hidden_size: Optional[int] = None,
+        hidden_size: Optional[int] = None,
         time_hidden_size: int = 512,
         classification_embedding_dim: int = 32,
         time_embedding_dim: int = 32,
@@ -41,7 +42,7 @@ class TimeLensRefineConfig(PretrainedConfig):
         refine_dropout: float = 0.0,
         lambda_ntp: float = 1.0,
         lambda_diou: float = 1.0,
-        lambda_reg: float = 2.0,
+        lambda_reg: float = 0.1,
         inference_max_background_gap: int = 2,
         inference_candidate_expansion: int = 4,
         inference_boundary_radius: int = 4,
@@ -68,6 +69,11 @@ class TimeLensRefineConfig(PretrainedConfig):
         self.pad_token_id = pad_token_id
         self.spatial_merge_size = int(spatial_merge_size)
         self.llm_hidden_size = llm_hidden_size
+        self.hidden_size = (
+            int(hidden_size)
+            if hidden_size is not None
+            else (int(llm_hidden_size) if llm_hidden_size is not None else None)
+        )
         self.time_hidden_size = int(time_hidden_size)
         self.classification_embedding_dim = int(classification_embedding_dim)
         self.time_embedding_dim = int(time_embedding_dim)
@@ -133,5 +139,12 @@ class TimeLensRefineConfig(PretrainedConfig):
             pad_token_id=getattr(base_config, "pad_token_id", None),
             spatial_merge_size=spatial_merge_size,
             llm_hidden_size=llm_hidden_size,
+            hidden_size=llm_hidden_size,
             **kwargs,
         )
+
+
+# Read-only compatibility for checkpoints and downstream imports created
+# before the Coarse2Refine rename.  New checkpoints always serialize the
+# canonical ``model_type=coarse2refine`` through the class above.
+TimeLensRefineConfig = Coarse2RefineConfig

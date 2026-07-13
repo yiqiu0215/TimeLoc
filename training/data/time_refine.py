@@ -19,19 +19,13 @@ TIME_REFINE_PROMPT_PREFIX = (
 )
 
 TIME_REFINE_PROMPT_SUFFIX = (
-    "\nPlease find the start and end times in the video corresponding\n"
-    "to the event described by the sentence:\n\n"
+    "\nSelect all visual temporal blocks matching the event query:\n"
     "'{query}'\n\n"
-    "Classify every visual temporal block as foreground or background.\n"
-    "Return exactly one classification token and its corresponding\n"
-    "timestamp token for every visual temporal block.\n\n"
-    "The answer format should be:\n"
-    "<vtg>\n"
-    "<bg><time_000>\n"
-    "<fg><time_001>\n"
-    "...\n"
-    "<bg><time_n>\n"
-    "</vtg>\n"
+    "Return only their timestamp tokens in chronological order, without separators.\n"
+    "Answer format:\n"
+    "<vtg><fg><time_029><time_038><fg></vtg>\n"
+    "If none:\n"
+    "<vtg><fg><fg></vtg>\n"
 )
 
 
@@ -246,9 +240,9 @@ def build_vtg_target(frame_labels: torch.Tensor, frame_bin_ids: torch.Tensor) ->
         raise ValueError("frame_labels must contain only 0/1 values.")
     if torch.any(bins < 0) or torch.any(bins >= TIME_BIN_COUNT):
         raise ValueError("frame_bin_ids must lie in [0, 300].")
-    rows = ["<vtg>"]
+    tokens = ["<vtg>", "<fg>"]
     for label, time_bin in zip(labels.tolist(), bins.tolist()):
-        category = "<fg>" if int(label) == 1 else "<bg>"
-        rows.append(f"{category}{format_time_token(int(time_bin))}")
-    rows.append("</vtg>")
-    return "\n".join(rows)
+        if int(label) == 1:
+            tokens.append(format_time_token(int(time_bin)))
+    tokens.extend(("<fg>", "</vtg>"))
+    return "".join(tokens)

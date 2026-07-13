@@ -1,5 +1,5 @@
 """
-SFT training script for TimeLens-8B.
+SFT training script for the legacy TimeLens paths and Qwen2.5 Coarse2Refine.
 Adapted from Qwen2-VL-Finetune/VideoMind train_sft_videomind.py.
 """
 import ast
@@ -30,11 +30,11 @@ from training.train.train_utils import (
 )
 from training.model_loader import get_config_class, get_model_class, get_processor_class
 from training.modeling.special_tokens import (
-    is_qwen25_timelens_3b,
-    register_time_refine_tokens,
+    is_qwen25_coarse2refine,
+    register_coarse2refine_tokens,
 )
-from training.modeling.modeling_timelens_refine import (
-    TimeLensRefineForConditionalGeneration,
+from training.modeling.modeling_coarse2refine import (
+    Coarse2RefineForConditionalGeneration,
 )
 
 local_rank = None
@@ -160,25 +160,25 @@ def train():
         **bnb_model_from_pretrained_args,
     )
 
-    # The dedicated Qwen2.5-VL-3B-TimeLens path owns the 301 time tokens and
+    # The dedicated Qwen2.5-VL-3B Coarse2Refine path owns the 301 time tokens and
     # must resize the base vocabulary before any optional PEFT wrapping.
     processor = processor_cls.from_pretrained(
         processor_source, trust_remote_code=True
     )
-    time_refine_target = is_qwen25_timelens_3b(
+    coarse2refine_target = is_qwen25_coarse2refine(
         model_args.model_id,
         model_args.model_name_or_path,
         model_args.processor_path,
     )
-    time_refine_tokens = None
-    if time_refine_target:
+    coarse2refine_tokens = None
+    if coarse2refine_target:
         if training_args.time_token_lr is None:
             training_args.time_token_lr = 5e-5
         if training_args.time_refine_lr is None:
             training_args.time_refine_lr = 1e-4
-        time_refine_tokens = register_time_refine_tokens(processor.tokenizer)
+        coarse2refine_tokens = register_coarse2refine_tokens(processor.tokenizer)
         model.resize_token_embeddings(len(processor.tokenizer))
-        model.config.timelens_refine_token_ids = time_refine_tokens.to_dict()
+        model.config.coarse2refine_token_ids = coarse2refine_tokens.to_dict()
 
     model.config.use_cache = False
     model_to_configure = model
@@ -240,12 +240,14 @@ def train():
                 if "merger" in name:
                     param.requires_grad = True
 
-    if time_refine_target:
-        if time_refine_tokens is None:
-            raise RuntimeError("TimeRefine target did not register its special tokens.")
-        model = TimeLensRefineForConditionalGeneration.from_base_model(
+    if coarse2refine_target:
+        if coarse2refine_tokens is None:
+            raise RuntimeError(
+                "Coarse2Refine target did not register its special tokens."
+            )
+        model = Coarse2RefineForConditionalGeneration.from_base_model(
             model,
-            time_refine_tokens,
+            coarse2refine_tokens,
             base_model_name_or_path=model_args.model_name_or_path,
         )
         model.config.use_cache = False
@@ -302,7 +304,7 @@ def train():
             output_dir_lora = os.path.join(training_args.output_dir, "lora")
             model.config.save_pretrained(output_dir_lora)
             save_state_dict = state_dict
-            if time_refine_target:
+            if coarse2refine_target:
                 save_state_dict = {**state_dict, **non_lora_state_dict}
             model.save_pretrained(output_dir_lora, state_dict=save_state_dict)
             processor.save_pretrained(output_dir_lora)
@@ -312,7 +314,7 @@ def train():
             )
     else:
         safe_save_model_for_hf_trainer(trainer, output_dir=training_args.output_dir)
-        if time_refine_target and (local_rank == 0 or local_rank == -1):
+        if coarse2refine_target and (local_rank == 0 or local_rank == -1):
             processor.save_pretrained(training_args.output_dir)
 
     if local_rank == 0 or local_rank == -1:

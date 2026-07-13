@@ -6,7 +6,7 @@ from transformers.utils import ModelOutput
 
 
 @dataclass
-class TimeLensRefineOutput(ModelOutput):
+class Coarse2RefineOutput(ModelOutput):
     loss: Optional[torch.Tensor] = None
     ntp_loss: Optional[torch.Tensor] = None
     diou_loss: Optional[torch.Tensor] = None
@@ -25,12 +25,18 @@ class TimeLensRefineOutput(ModelOutput):
 
 
 @dataclass
-class TimeLensRefineInferenceOutput(ModelOutput):
+class Coarse2RefineInferenceOutput(ModelOutput):
     pred_start: Optional[torch.Tensor] = None
     pred_end: Optional[torch.Tensor] = None
     generated_ids: Optional[torch.Tensor] = None
     prompt_length: Optional[int] = None
     statuses: Optional[Tuple[str, ...]] = None
+    parse_statuses: Optional[Tuple[str, ...]] = None
     coarse_labels: Optional[Tuple[Tuple[int, ...], ...]] = None
     coarse_time_bins: Optional[Tuple[Tuple[int, ...], ...]] = None
     candidate_windows: Optional[Tuple[Any, ...]] = None
+
+
+# Read-only compatibility aliases for code written against the previous names.
+TimeLensRefineOutput = Coarse2RefineOutput
+TimeLensRefineInferenceOutput = Coarse2RefineInferenceOutput

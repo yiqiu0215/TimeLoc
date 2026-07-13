@@ -18,7 +18,7 @@ from training.data.time_refine import (
     normalize_single_span,
     quantize_time_bins,
 )
-from training.modeling.special_tokens import is_qwen25_timelens_3b
+from training.modeling.special_tokens import is_qwen25_coarse2refine
 
 GROUNDING_PROMPT = (
     "Please find the visual event described by the sentence '{}', determining its starting and ending times. "
@@ -105,6 +105,8 @@ def _align_spans_to_sampled_timestamps(spans, sampled_timestamps):
 
 
 def _is_qwen2_timelens_model(model_path: str) -> bool:
+    # Legacy video-format selection only; Coarse2Refine dispatch is handled
+    # exclusively by ``is_qwen25_coarse2refine`` below.
     if not model_path:
         return False
     m = model_path.lower()
@@ -186,12 +188,12 @@ class GroundingDataset(Dataset):
         )
         self._is_qwen2_timelens = _is_qwen2_timelens_model(self._format_model_path)
         self._is_qwen2 = _is_qwen2_model(self._format_model_path)
-        if training_mode == "sft" and is_qwen25_timelens_3b(
+        if training_mode == "sft" and is_qwen25_coarse2refine(
             getattr(model_args, "model_id", None),
             getattr(model_args, "model_name_or_path", None),
             getattr(model_args, "processor_path", None),
         ):
-            training_mode = "time_refine_sft"
+            training_mode = "coarse2refine_sft"
         self.training_mode = training_mode
 
         if dataset_name in ("gemini_refined_data", "timelens-100k"):
@@ -337,13 +339,13 @@ class GroundingDataset(Dataset):
     def __getitem__(self, idx):
         if self.training_mode == "sft":
             return self._getitem_sft(idx)
-        if self.training_mode == "time_refine_sft":
-            return self._getitem_time_refine_sft(idx)
+        if self.training_mode == "coarse2refine_sft":
+            return self._getitem_coarse2refine_sft(idx)
         if self.training_mode == "grpo":
             return self._getitem_grpo(idx)
         raise ValueError(f"Unsupported training_mode: {self.training_mode}")
 
-    def _getitem_time_refine_sft(self, idx):
+    def _getitem_coarse2refine_sft(self, idx):
         anno = copy.deepcopy(self.annos[idx])
         query = parse_query(anno["query"])
         duration = float(anno["duration"])
@@ -365,11 +367,14 @@ class GroundingDataset(Dataset):
             }
         ]
 
-        images, videos = process_vision_info(
+        images, videos, video_kwargs = process_vision_info(
             messages,
+            return_video_kwargs=True,
             return_video_metadata=True,
         )
         frame_timestamps = extract_temporal_block_timestamps(videos)
+        processor_videos = [entry[0] for entry in videos]
+        processor_video_metadata = [entry[1] for entry in videos]
 
         text_target_frame_bins = quantize_time_bins(
             frame_timestamps,
@@ -394,9 +399,11 @@ class GroundingDataset(Dataset):
         inputs = self.processor(
             text=text,
             images=images,
-            videos=videos,
+            videos=processor_videos,
+            video_metadata=processor_video_metadata,
             return_tensors="pt",
             do_resize=False,
+            **video_kwargs,
         )
         if "input_ids" not in inputs:
             raise ValueError("Processor output is missing input_ids.")
@@ -414,7 +421,7 @@ class GroundingDataset(Dataset):
         video_grid_thw = torch.as_tensor(video_grid_thw, dtype=torch.long)
         if video_grid_thw.ndim != 2 or video_grid_thw.shape[0] != 1:
             raise ValueError(
-                "TimeRefine requires one video_grid_thw row per sample, got "
+                "Coarse2Refine requires one video_grid_thw row per sample, got "
                 f"{tuple(video_grid_thw.shape)}."
             )
         if int(video_grid_thw[0, 0].item()) != frame_timestamps.numel():

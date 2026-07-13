@@ -1,3 +1,4 @@
+import json
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,18 +15,19 @@ from training.data.time_refine import (
     quantize_time_bins,
 )
 from training.modeling.special_tokens import (
-    is_qwen25_timelens_3b,
-    register_time_refine_tokens,
+    is_qwen25_coarse2refine,
+    register_coarse2refine_tokens,
 )
-from training.modeling.configuration_timelens_refine import TimeLensRefineConfig
-from training.modeling.modeling_timelens_refine import (
-    TimeLensRefineForConditionalGeneration,
+from training.modeling.configuration_coarse2refine import Coarse2RefineConfig
+from training.modeling.modeling_coarse2refine import (
+    Coarse2RefineForConditionalGeneration,
 )
-from training.modeling.special_tokens import RegisteredTimeRefineTokens
+from training.modeling.special_tokens import RegisteredCoarse2RefineTokens
 from training.modeling.candidate_parser import (
     build_candidate_windows,
     parse_time_refine_sequence,
 )
+from training.modeling.losses import smooth_l1_boundary_loss
 from transformers import PretrainedConfig, PreTrainedModel
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from training.modeling.time_token_packer import TimeTokenPacker
@@ -56,19 +58,27 @@ class FakeTokenizer:
 class Stage1TimeRefineTest(unittest.TestCase):
     def test_metadata_prompt_target_and_token_registration(self):
         tokenizer = FakeTokenizer()
-        tokens = register_time_refine_tokens(tokenizer)
+        tokens = register_coarse2refine_tokens(tokenizer)
         self.assertEqual(len(tokens.time_token_ids), 301)
         self.assertEqual(
             tokens.bin_for_token_id(tokens.token_id_for_bin(217)),
             217,
         )
         self.assertTrue(
-            is_qwen25_timelens_3b(
+            is_qwen25_coarse2refine(
+                "qwen25-vl-3b-coarse2refine",
+                "/models/Qwen2.5-VL-3B-Instruct",
+                "TencentARC/TimeLens-7B",
+            )
+        )
+        self.assertFalse(
+            is_qwen25_coarse2refine(
                 "timelens-3b",
                 "/models/Qwen2.5-VL-3B-Instruct",
                 "TencentARC/TimeLens-7B",
             )
         )
+        self.assertEqual(Coarse2RefineConfig.model_type, "coarse2refine")
 
         timestamps = torch.tensor([0.0, 3.0, 6.0])
         bins = quantize_time_bins(timestamps, duration=6.0)
@@ -83,12 +93,18 @@ class Stage1TimeRefineTest(unittest.TestCase):
         target = build_vtg_target(labels, bins)
         self.assertEqual(
             target,
-            "<vtg>\n<bg><time_000>\n<fg><time_150>\n<bg><time_300>\n</vtg>",
+            "<vtg><fg><time_150><fg></vtg>",
+        )
+        self.assertEqual(
+            build_vtg_target(torch.zeros(3, dtype=torch.long), bins),
+            "<vtg><fg><fg></vtg>",
         )
 
         prefix, suffix = build_time_refine_prompt_parts("a person enters")
         self.assertIn("Event query: a person enters", prefix)
         self.assertIn("'a person enters'", suffix)
+        self.assertIn("Return only the timestamp tokens", suffix)
+        self.assertIn("<vtg><fg><fg></vtg>", suffix)
 
     def test_collator_pads_frame_metadata(self):
         tokenizer = FakeTokenizer()
@@ -137,13 +153,13 @@ class Stage1TimeRefineTest(unittest.TestCase):
         )
         input_ids = torch.tensor(
             [
-                [10, 1, 2, 3, 11, 0],
-                [0, 10, 1, 2, 3, 11],
+                [10, 1, 2, 2, 3, 11, 0],
+                [0, 0, 10, 1, 2, 3, 11],
             ],
             dtype=torch.long,
         )
         attention_mask = torch.tensor(
-            [[1, 1, 1, 1, 1, 0], [0, 1, 1, 1, 1, 1]],
+            [[1, 1, 1, 1, 1, 1, 0], [0, 0, 1, 1, 1, 1, 1]],
             dtype=torch.long,
         )
         output = packer(
@@ -185,7 +201,7 @@ class Stage1TimeRefineTest(unittest.TestCase):
         dataset.model_args = SimpleNamespace(
             processor_path="TencentARC/TimeLens-7B",
             model_name_or_path="/models/Qwen2.5-VL-3B-Instruct",
-            model_id="timelens-3b",
+            model_id="qwen25-vl-3b-coarse2refine",
             conv_type="chatml",
         )
         dataset.data_args = SimpleNamespace(
@@ -220,7 +236,7 @@ class Stage1TimeRefineTest(unittest.TestCase):
             "training.data.grounding.preprocess",
             return_value=torch.tensor([-100, -100, -100, 0, 1]),
         ):
-            sample = dataset._getitem_time_refine_sft(0)
+            sample = dataset._getitem_coarse2refine_sft(0)
 
         self.assertEqual(sample["frame_bin_ids"].tolist(), [0, 150])
         self.assertEqual(sample["frame_labels"].tolist(), [0, 1])
@@ -230,7 +246,10 @@ class Stage1TimeRefineTest(unittest.TestCase):
         content = dataset.processor.messages[0]["content"]
         self.assertEqual([item["type"] for item in content], ["text", "video", "text"])
         self.assertEqual(dataset.processor.messages[1]["role"], "assistant")
-        self.assertIn("<fg><time_150>", dataset.processor.messages[1]["content"])
+        self.assertEqual(
+            dataset.processor.messages[1]["content"],
+            "<vtg><fg><time_150><fg></vtg>",
+        )
 
 
 class FakeVisionCore(torch.nn.Module):
@@ -320,14 +339,14 @@ class FakeBaseModel(PreTrainedModel):
 class Stage2WrapperTest(unittest.TestCase):
     def test_wrapper_forward_and_backward(self):
         base_model = FakeBaseModel(FakeBaseConfig())
-        token_spec = RegisteredTimeRefineTokens(
+        token_spec = RegisteredCoarse2RefineTokens(
             fg_token_id=500,
             bg_token_id=501,
             vtg_token_id=502,
             vtg_end_token_id=503,
             time_token_ids=tuple(range(1000, 1301)),
         )
-        wrapper = TimeLensRefineForConditionalGeneration.from_base_model(
+        wrapper = Coarse2RefineForConditionalGeneration.from_base_model(
             base_model,
             token_spec,
             base_model_name_or_path="fake-qwen25-vl-3b",
@@ -362,17 +381,23 @@ class Stage2WrapperTest(unittest.TestCase):
             frame_valid_mask=torch.tensor([[True, True], [True, False]]),
             gt_start=torch.tensor([[0.2], [0.0]]),
             gt_end=torch.tensor([[0.8], [0.5]]),
-            duration=torch.tensor([[1.0], [1.0]]),
+            duration=torch.tensor([[10.0], [10.0]]),
         )
         self.assertTrue(torch.isfinite(output.loss))
         self.assertEqual(tuple(output.pred_start.shape), (2,))
         self.assertEqual(tuple(output.pred_end.shape), (2,))
+        expected_smooth_l1 = smooth_l1_boundary_loss(
+            torch.stack([output.pred_start, output.pred_end], dim=-1),
+            torch.tensor([[0.2, 0.8], [0.0, 0.5]]),
+        )
+        self.assertTrue(torch.allclose(output.smooth_l1_loss, expected_smooth_l1))
+        self.assertEqual(wrapper.config.lambda_reg, 0.1)
         output.loss.backward()
         self.assertIsNotNone(wrapper.time_refine_head.time_proj.linear1.weight.grad)
         self.assertIsNotNone(wrapper.base_model.transform.weight.grad)
 
     def test_candidate_parser_and_wrapper_generation(self):
-        token_spec = RegisteredTimeRefineTokens(
+        token_spec = RegisteredCoarse2RefineTokens(
             fg_token_id=500,
             bg_token_id=501,
             vtg_token_id=502,
@@ -380,33 +405,73 @@ class Stage2WrapperTest(unittest.TestCase):
             time_token_ids=tuple(range(1000, 1301)),
         )
         parsed = parse_time_refine_sequence(
-            [999, 502, 500, 1010, 501, 1020, 500, 1030, 503],
+            [999, 502, 500, 1030, 1010, 500, 503],
             token_spec,
             expected_time_bins=[10, 20, 30],
         )
         self.assertTrue(parsed.valid)
         self.assertEqual(parsed.labels, (1, 0, 1))
+        self.assertEqual(parsed.time_bins, (10, 20, 30))
+        self.assertEqual(parsed.foreground_token_positions, (0, 2))
+        self.assertEqual(parsed.foreground_token_offsets, (4, 3))
+        self.assertEqual(parsed.status, "recovered_out_of_order")
+
+        empty = parse_time_refine_sequence(
+            [502, 500, 500, 503],
+            token_spec,
+            expected_time_bins=[10, 20, 30],
+        )
+        self.assertTrue(empty.valid)
+        self.assertEqual(empty.labels, (0, 0, 0))
+        self.assertEqual(empty.status, "no_foreground")
+
         candidate = build_candidate_windows(parsed.labels)
         self.assertEqual(candidate.selected_run, (0, 2))
+        self.assertEqual(candidate.cleaned_labels, (1, 1, 1))
         self.assertEqual(candidate.start_window, (0, 2))
+
+        score_first = build_candidate_windows(
+            [1, 0, 1, 0, 0, 1],
+            foreground_scores=[0.4, 0.0, 0.4, 0.0, 0.0, 0.8],
+            max_background_gap=1,
+        )
+        self.assertEqual(score_first.selected_run, (5, 5))
+        gap_excluded = build_candidate_windows(
+            [1, 0, 1, 0, 0, 1],
+            foreground_scores=[0.9, 0.0, 0.9, 0.0, 0.0, 0.8],
+            max_background_gap=1,
+        )
+        self.assertEqual(gap_excluded.selected_run, (0, 2))
+        longer_score_tie = build_candidate_windows(
+            [1, 0, 1, 0, 0, 1],
+            foreground_scores=[0.8, 0.0, 0.8, 0.0, 0.0, 0.8],
+            max_background_gap=1,
+        )
+        self.assertEqual(longer_score_tie.selected_run, (0, 2))
+        earlier_tie = build_candidate_windows(
+            [1, 0, 0, 1],
+            foreground_scores=[0.8, 0.0, 0.0, 0.8],
+            max_background_gap=0,
+        )
+        self.assertEqual(earlier_tie.selected_run, (0, 0))
 
         base_model = FakeBaseModel(FakeBaseConfig())
 
         def fake_generate(input_ids=None, **kwargs):
             suffix = torch.tensor(
-                [[502, 500, 1010, 501, 1020, 503]],
+                [[502, 500, 1010, 500, 503]],
                 dtype=input_ids.dtype,
                 device=input_ids.device,
             )
             return torch.cat([input_ids, suffix], dim=1)
 
         base_model.generate = fake_generate
-        wrapper = TimeLensRefineForConditionalGeneration.from_base_model(
+        wrapper = Coarse2RefineForConditionalGeneration.from_base_model(
             base_model,
             token_spec,
             base_model_name_or_path="fake-qwen25-vl-3b",
         )
-        result = wrapper.generate_time_refine(
+        result = wrapper.generate_coarse2refine(
             input_ids=torch.tensor([[10, 1, 2, 3, 11]], dtype=torch.long),
             attention_mask=torch.ones((1, 5), dtype=torch.long),
             pixel_values_videos=torch.randn(2, 8),
@@ -418,18 +483,63 @@ class Stage2WrapperTest(unittest.TestCase):
             max_new_tokens=32,
         )
         self.assertEqual(result.statuses, ("ok",))
+        self.assertEqual(result.parse_statuses, ("ok",))
+        self.assertEqual(result.coarse_labels, ((1, 0),))
         self.assertTrue(torch.isfinite(result.pred_start).all())
         self.assertTrue(torch.isfinite(result.pred_end).all())
 
+        def fake_generate_with_scores(input_ids=None, **kwargs):
+            suffix = torch.tensor(
+                [[502, 500, 1060, 1010, 500, 503]],
+                dtype=input_ids.dtype,
+                device=input_ids.device,
+            )
+            scores = []
+            for offset in range(suffix.shape[1]):
+                logits = torch.zeros(
+                    (1, base_model.config.vocab_size),
+                    dtype=torch.float32,
+                    device=input_ids.device,
+                )
+                if offset == 2:
+                    logits[0, 1060] = 5.0
+                elif offset == 3:
+                    logits[0, 1010] = 1.0
+                scores.append(logits)
+            return SimpleNamespace(
+                sequences=torch.cat([input_ids, suffix], dim=1),
+                scores=tuple(scores),
+            )
+
+        base_model.generate = fake_generate_with_scores
+        scored_result = wrapper.generate_coarse2refine(
+            input_ids=torch.tensor([[10, 1, 2, 3, 11]], dtype=torch.long),
+            attention_mask=torch.ones((1, 5), dtype=torch.long),
+            pixel_values_videos=torch.randn(6, 8),
+            video_grid_thw=torch.tensor([[6, 2, 2]]),
+            frame_bin_ids=torch.tensor([[10, 20, 30, 40, 50, 60]]),
+            frame_timestamps=torch.tensor([[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]]),
+            frame_valid_mask=torch.tensor([[True, True, True, True, True, True]]),
+            duration=torch.tensor([[5.0]]),
+            max_new_tokens=32,
+        )
+        self.assertEqual(scored_result.statuses, ("ok",))
+        self.assertEqual(
+            scored_result.parse_statuses,
+            ("recovered_out_of_order",),
+        )
+        self.assertEqual(scored_result.coarse_labels, ((1, 0, 0, 0, 0, 1),))
+        self.assertEqual(scored_result.candidate_windows[0].selected_run, (5, 5))
+
     def test_wrapper_checkpoint_save_and_load(self):
-        token_spec = RegisteredTimeRefineTokens(
+        token_spec = RegisteredCoarse2RefineTokens(
             fg_token_id=500,
             bg_token_id=501,
             vtg_token_id=502,
             vtg_end_token_id=503,
             time_token_ids=tuple(range(1000, 1301)),
         )
-        wrapper = TimeLensRefineForConditionalGeneration.from_base_model(
+        wrapper = Coarse2RefineForConditionalGeneration.from_base_model(
             FakeBaseModel(FakeBaseConfig()),
             token_spec,
             base_model_name_or_path="fake-qwen25-vl-3b",
@@ -439,7 +549,13 @@ class Stage2WrapperTest(unittest.TestCase):
         (directory / "base_model").mkdir(exist_ok=True)
         wrapper.save_pretrained(directory)
         self.assertTrue((directory / "base_model").exists())
-        loaded = TimeLensRefineForConditionalGeneration.from_pretrained(
+        with (directory / "config.json").open("r", encoding="utf-8") as reader:
+            saved_config = json.load(reader)
+        self.assertEqual(saved_config["model_type"], "coarse2refine")
+        self.assertEqual(
+            saved_config["architectures"], ["Coarse2RefineForConditionalGeneration"]
+        )
+        loaded = Coarse2RefineForConditionalGeneration.from_pretrained(
             directory,
             base_model=FakeBaseModel(FakeBaseConfig()),
         )
@@ -454,7 +570,7 @@ class Stage2WrapperTest(unittest.TestCase):
             )
         )
         fresh_base = FakeBaseModel(FakeBaseConfig())
-        fresh_wrapper = TimeLensRefineForConditionalGeneration.from_base_model(
+        fresh_wrapper = Coarse2RefineForConditionalGeneration.from_base_model(
             fresh_base,
             token_spec,
             base_model_name_or_path="fake-qwen25-vl-3b",

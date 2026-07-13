@@ -13,11 +13,11 @@ from transformers import AutoModelForImageTextToText, AutoProcessor
 from evaluation.utils import GroundingDataset
 from timelens.dataset.timelens_data import DATASET_DICT
 from timelens.utils import extract_time
-from training.model_loader import is_time_refine_checkpoint
-from training.modeling.modeling_timelens_refine import (
-    TimeLensRefineForConditionalGeneration,
+from training.model_loader import is_coarse2refine_checkpoint
+from training.modeling.modeling_coarse2refine import (
+    Coarse2RefineForConditionalGeneration,
 )
-from training.modeling.special_tokens import register_time_refine_tokens
+from training.modeling.special_tokens import register_coarse2refine_tokens
 
 
 def parse_args():
@@ -27,12 +27,18 @@ def parse_args():
     parser.add_argument(
         "--model_id",
         default=None,
-        help="Optional model identifier; use timelens-3b for the Qwen2.5 refinement path.",
+        help=(
+            "Optional model identifier; use qwen25-vl-3b-coarse2refine for "
+            "the Coarse2Refine path."
+        ),
     )
     parser.add_argument(
         "--processor_path",
         default=None,
-        help="Processor checkpoint path. For TimeLens-3B, set to TencentARC/TimeLens-7B.",
+        help=(
+            "Processor checkpoint path. Coarse2Refine may reuse "
+            "TencentARC/TimeLens-7B; this path is not a model trigger."
+        ),
     )
     parser.add_argument("--min_tokens", type=int, default=16)
     parser.add_argument("--total_tokens", type=int, default=3584)
@@ -75,15 +81,15 @@ if __name__ == "__main__":
         'Device should be set to "auto" for multi-GPU evaluation.'
     )
 
-    time_refine_target = is_time_refine_checkpoint(
+    coarse2refine_target = is_coarse2refine_checkpoint(
         args.model_path,
         model_id=args.model_id,
         processor_path=args.processor_path,
     )
 
     # Load model
-    if time_refine_target:
-        model = TimeLensRefineForConditionalGeneration.from_pretrained(
+    if coarse2refine_target:
+        model = Coarse2RefineForConditionalGeneration.from_pretrained(
             args.model_path,
             dtype=torch.bfloat16,
             attn_implementation="flash_attention_2",
@@ -101,7 +107,7 @@ if __name__ == "__main__":
     processor_source = args.processor_path or args.model_path
     args.processor_path = processor_source
     args.format_model_path = processor_source
-    args.time_refine_target = time_refine_target
+    args.coarse2refine_target = coarse2refine_target
 
     # Load processor (model-specific)
     processor = AutoProcessor.from_pretrained(
@@ -110,12 +116,12 @@ if __name__ == "__main__":
         do_resize=False,  # For Video Processing, we do not need to resize the video frames again in the processor
         trust_remote_code=True,
     )
-    if time_refine_target:
-        token_spec = register_time_refine_tokens(processor.tokenizer)
+    if coarse2refine_target:
+        token_spec = register_coarse2refine_tokens(processor.tokenizer)
         config_token_ids = tuple(model.config.time_token_ids)
         if config_token_ids != token_spec.time_token_ids:
             raise ValueError(
-                "Processor and TimeLensRefine checkpoint use different time token ids."
+                "Processor and Coarse2Refine checkpoint use different time token ids."
             )
     # Load dataset
     dataset_class = DATASET_DICT[args.dataset]
@@ -148,9 +154,10 @@ if __name__ == "__main__":
         duration = anno["duration"]
         span = anno["span"]  # ground truth time span
         status = None
+        parse_status = None
 
-        if time_refine_target:
-            refine_output = model.generate_time_refine(
+        if coarse2refine_target:
+            refine_output = model.generate_coarse2refine(
                 **inputs,
                 do_sample=False,
                 max_new_tokens=512,
@@ -164,6 +171,7 @@ if __name__ == "__main__":
                 clean_up_tokenization_spaces=False,
             )[0]
             status = refine_output.statuses[0]
+            parse_status = refine_output.parse_statuses[0]
             if status == "ok":
                 timestamps = [[
                     float(refine_output.pred_start[0].item()),
@@ -172,7 +180,7 @@ if __name__ == "__main__":
                 print(f"Refined timestamps: {timestamps}")
             else:
                 timestamps = [[-1, -1]]
-                print(f"TimeRefine status={status}; returning [-1, -1].")
+                print(f"Coarse2Refine status={status}; returning [-1, -1].")
         else:
             output_ids = model.generate(
                 **inputs,
@@ -225,6 +233,8 @@ if __name__ == "__main__":
         }
         if status is not None:
             dump[f"{video_name}>>>{query}>>>{span}"]["status"] = status
+        if parse_status is not None:
+            dump[f"{video_name}>>>{query}>>>{span}"]["parse_status"] = parse_status
 
         print(
             f"video_path: {video_path}, query: {query}, duration: {duration}, "

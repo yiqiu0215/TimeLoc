@@ -20,7 +20,7 @@ def get_time_tokens() -> tuple[str, ...]:
 
 
 @dataclass(frozen=True)
-class RegisteredTimeRefineTokens:
+class RegisteredCoarse2RefineTokens:
     fg_token_id: int
     bg_token_id: int
     vtg_token_id: int
@@ -69,8 +69,8 @@ def _extract_token_ids(encoded: Any) -> list[int]:
     return [int(token_id) for token_id in ids]
 
 
-def register_time_refine_tokens(tokenizer) -> RegisteredTimeRefineTokens:
-    """Register the exact token set required by TimeLens-TimeRefine.
+def register_coarse2refine_tokens(tokenizer) -> RegisteredCoarse2RefineTokens:
+    """Register the exact token set required by the Coarse2Refine path.
 
     The design uses ``ID(<time_q>) - ID(<time_000>) == q``.  This invariant is
     checked here instead of being assumed later by the refinement head.
@@ -88,7 +88,9 @@ def register_time_refine_tokens(tokenizer) -> RegisteredTimeRefineTokens:
         int(tokenizer.convert_tokens_to_ids(token)) for token in all_tokens
     ]
     if len(set(token_ids)) != len(token_ids):
-        raise ValueError("TimeRefine special tokens do not have unique token ids.")
+        raise ValueError(
+            "Coarse2Refine special tokens do not have unique token ids."
+        )
 
     time_token_ids = tuple(token_ids[len(CLASSIFICATION_TOKENS) :])
     expected_ids = tuple(
@@ -110,7 +112,7 @@ def register_time_refine_tokens(tokenizer) -> RegisteredTimeRefineTokens:
                 f"got {encoded_ids}."
             )
 
-    return RegisteredTimeRefineTokens(
+    return RegisteredCoarse2RefineTokens(
         fg_token_id=token_ids[0],
         bg_token_id=token_ids[1],
         vtg_token_id=token_ids[2],
@@ -119,19 +121,51 @@ def register_time_refine_tokens(tokenizer) -> RegisteredTimeRefineTokens:
     )
 
 
+def is_qwen25_coarse2refine(
+    model_id: str | None,
+    model_name_or_path: str | None,
+    processor_path: str | None,
+) -> bool:
+    """Return whether the dedicated Qwen2.5-VL-3B Coarse2Refine path is active.
+
+    The Processor is intentionally not a trigger.  ``TimeLens-7B`` is reused
+    only for tokenization/video preprocessing and must not turn an ordinary
+    Qwen2.5-VL or TimeLens checkpoint into a Coarse2Refine model.
+    """
+
+    model_id_text = (model_id or "").lower()
+    model_path_text = (model_name_or_path or "").lower()
+    # Keep the argument for API compatibility, but never use the Processor as
+    # a model-family trigger.
+    _ = processor_path
+
+    def _is_qwen25_3b_target(text: str) -> bool:
+        return (
+            "coarse2refine" in text
+            and ("qwen25" in text or "qwen2.5" in text or "qwen2_5" in text)
+            and "3b" in text
+        )
+
+    if _is_qwen25_3b_target(model_id_text):
+        return True
+    return _is_qwen25_3b_target(model_path_text)
+
+
+# Public compatibility aliases.  New code must use the Coarse2Refine names;
+# these aliases do not restore the old TimeLens-based trigger behavior.
+RegisteredTimeRefineTokens = RegisteredCoarse2RefineTokens
+register_time_refine_tokens = register_coarse2refine_tokens
+
+
 def is_qwen25_timelens_3b(
     model_id: str | None,
     model_name_or_path: str | None,
     processor_path: str | None,
 ) -> bool:
-    """Return whether the dedicated Qwen2.5-VL-3B-TimeLens SFT path is active."""
+    """Deprecated compatibility alias for the Coarse2Refine detector."""
 
-    model_id_text = (model_id or "").lower()
-    model_path_text = (model_name_or_path or "").lower()
-    processor_path_text = (processor_path or "").lower()
-    if "timelens-3b" in model_id_text:
-        return True
-    return (
-        ("qwen2.5-vl-3b" in model_path_text or "qwen2_5_vl_3b" in model_path_text)
-        and "timelens" in processor_path_text
+    return is_qwen25_coarse2refine(
+        model_id,
+        model_name_or_path,
+        processor_path,
     )

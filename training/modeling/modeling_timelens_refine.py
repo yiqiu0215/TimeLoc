@@ -11,16 +11,16 @@ from training.modeling.candidate_parser import (
     build_candidate_windows,
     parse_time_refine_sequence,
 )
-from training.modeling.configuration_timelens_refine import TimeLensRefineConfig
+from training.modeling.configuration_coarse2refine import Coarse2RefineConfig
 from training.modeling.losses import diou_loss_1d, smooth_l1_boundary_loss
 from training.modeling.outputs import (
-    TimeLensRefineInferenceOutput,
-    TimeLensRefineOutput,
+    Coarse2RefineInferenceOutput,
+    Coarse2RefineOutput,
 )
 from training.modeling.refine_windows import build_training_boundary_window
 from training.modeling.special_tokens import (
     TIME_BIN_COUNT,
-    RegisteredTimeRefineTokens,
+    RegisteredCoarse2RefineTokens,
 )
 from training.modeling.time_refine_head import TimeRefineHead
 from training.modeling.time_token_packer import TimeTokenPacker
@@ -84,16 +84,16 @@ def _resolve_model_with_attr(model, attribute: str):
     return None
 
 
-class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
-    """HF-compatible wrapper for Qwen2.5-VL-3B-TimeLens SFT refinement."""
+class Coarse2RefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
+    """HF-compatible wrapper for Qwen2.5-VL-3B Coarse2Refine SFT."""
 
-    config_class = TimeLensRefineConfig
+    config_class = Coarse2RefineConfig
     base_model_prefix = "_base_model"
 
-    def __init__(self, config: TimeLensRefineConfig, base_model=None):
+    def __init__(self, config: Coarse2RefineConfig, base_model=None):
         super().__init__(config)
         if config.llm_hidden_size is None:
-            raise ValueError("TimeLensRefineConfig.llm_hidden_size is required.")
+            raise ValueError("Coarse2RefineConfig.llm_hidden_size is required.")
         self._base_model = None
         self.time_refine_head = TimeRefineHead(
             llm_hidden_size=int(config.llm_hidden_size),
@@ -120,7 +120,7 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
         **kwargs,
     ):
         base_config = _resolve_multimodal_config(base_model)
-        config = TimeLensRefineConfig.from_base_model_config(
+        config = Coarse2RefineConfig.from_base_model_config(
             base_config,
             base_model_name_or_path=base_model_name_or_path,
             token_spec=token_spec,
@@ -153,14 +153,20 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
         return self.time_refine_head.branch_embedding
 
     @property
-    def time_refine_token_spec(self) -> RegisteredTimeRefineTokens:
-        return RegisteredTimeRefineTokens(
+    def coarse2refine_token_spec(self) -> RegisteredCoarse2RefineTokens:
+        return RegisteredCoarse2RefineTokens(
             fg_token_id=int(self.config.fg_token_id),
             bg_token_id=int(self.config.bg_token_id),
             vtg_token_id=int(self.config.vtg_token_id),
             vtg_end_token_id=int(self.config.vtg_end_token_id),
             time_token_ids=tuple(int(value) for value in self.config.time_token_ids),
         )
+
+    @property
+    def time_refine_token_spec(self) -> RegisteredCoarse2RefineTokens:
+        """Deprecated compatibility alias for ``coarse2refine_token_spec``."""
+
+        return self.coarse2refine_token_spec
 
     def attach_base_model(self, base_model):
         self._base_model = base_model
@@ -187,7 +193,9 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
         """Save the refinement config/head and the attached base model together."""
 
         if self.base_model is None:
-            raise RuntimeError("Cannot save a TimeLensRefine wrapper without a base model.")
+            raise RuntimeError(
+                "Cannot save a Coarse2Refine wrapper without a base model."
+            )
         save_directory = Path(save_directory)
         save_directory.mkdir(parents=True, exist_ok=True)
         base_directory = save_directory / "base_model"
@@ -217,6 +225,8 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
             state_dict=base_state_dict or None,
             **base_save_kwargs,
         )
+        self.config.model_type = Coarse2RefineConfig.model_type
+        self.config.architectures = [self.__class__.__name__]
         self.config.base_model_subdir = "base_model"
         super().save_pretrained(
             save_directory,
@@ -293,11 +303,11 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
 
         checkpoint = Path(pretrained_model_name_or_path)
         supplied_config = kwargs.get("config")
-        if isinstance(supplied_config, TimeLensRefineConfig):
+        if isinstance(supplied_config, Coarse2RefineConfig):
             config = supplied_config
         else:
             config_source = supplied_config or pretrained_model_name_or_path
-            config = TimeLensRefineConfig.from_pretrained(config_source)
+            config = Coarse2RefineConfig.from_pretrained(config_source)
             kwargs["config"] = config
 
         base_model = kwargs.pop("base_model", None)
@@ -312,7 +322,7 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
                 base_source = getattr(config, "base_model_name_or_path", None)
             if base_source is None:
                 raise ValueError(
-                    "TimeLensRefine checkpoint does not specify a base model source."
+                    "Coarse2Refine checkpoint does not specify a base model source."
                 )
 
             base_load_keys = {
@@ -342,7 +352,7 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
                 base_origin = getattr(config, "base_model_name_or_path", None)
                 if not base_origin:
                     raise ValueError(
-                        "PEFT TimeLensRefine checkpoint is missing the original base model path."
+                        "PEFT Coarse2Refine checkpoint is missing the original base model path."
                     )
                 base_model = AutoModelForImageTextToText.from_pretrained(
                     base_origin,
@@ -352,7 +362,7 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
                     from peft import PeftModel
                 except ImportError as exc:
                     raise RuntimeError(
-                        "Loading a PEFT TimeLensRefine checkpoint requires peft."
+                        "Loading a PEFT Coarse2Refine checkpoint requires peft."
                     ) from exc
                 base_model = PeftModel.from_pretrained(
                     base_model,
@@ -401,7 +411,7 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
                             )
             if state_dict is None:
                 raise FileNotFoundError(
-                    f"No model weight file found in TimeLensRefine checkpoint {checkpoint}."
+                    f"No model weight file found in Coarse2Refine checkpoint {checkpoint}."
                 )
             non_lora_state_file = checkpoint / "non_lora_state_dict.bin"
             if non_lora_state_file.exists():
@@ -421,7 +431,7 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
             ]
             if unexpected or missing:
                 raise ValueError(
-                    "TimeLensRefine checkpoint state is incompatible: "
+                    "Coarse2Refine checkpoint state is incompatible: "
                     f"missing={missing[:8]}, unexpected={unexpected[:8]}"
                 )
             model.eval()
@@ -541,12 +551,12 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
             "duration",
         }
         if refine_keys.intersection(kwargs):
-            return self.generate_time_refine(*args, **kwargs)
+            return self.generate_coarse2refine(*args, **kwargs)
         
         return self.base_model.generate(*args, **kwargs)
 
     @torch.no_grad()
-    def generate_time_refine(
+    def generate_coarse2refine(
         self,
         input_ids: torch.LongTensor,
         attention_mask: torch.Tensor,
@@ -558,8 +568,8 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
         pixel_values_videos: Optional[torch.Tensor] = None,
         visual_embeddings: Optional[torch.Tensor] = None,
         **generation_kwargs,
-    ) -> TimeLensRefineInferenceOutput:
-        """Generate coarse VTG classes, then refine the selected candidate interval."""
+    ) -> Coarse2RefineInferenceOutput:
+        """Generate a foreground set, then refine the selected candidate interval."""
 
         if input_ids.ndim != 2 or attention_mask.shape != input_ids.shape:
             raise ValueError("Inference input_ids and attention_mask must be [B, L].")
@@ -654,7 +664,7 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
             expected_bins = frame_bin_ids[batch_index, valid].long().tolist()
             parsed = parse_time_refine_sequence(
                 generated_part,
-                self.time_refine_token_spec,
+                self.coarse2refine_token_spec,
                 expected_time_bins=expected_bins,
                 expected_length=len(expected_bins),
             )
@@ -667,16 +677,23 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
 
             foreground_scores = None
             if generation_scores is not None:
-                score_values = []
-                for offset in parsed.classification_token_offsets:
+                score_values = [0.0] * len(parsed.labels)
+                score_valid = True
+                for position, offset in zip(
+                    parsed.foreground_token_positions,
+                    parsed.foreground_token_offsets,
+                ):
                     if offset >= len(generation_scores):
-                        score_values = []
+                        score_valid = False
                         break
                     logits = generation_scores[offset][batch_index].float()
-                    score_values.append(
-                        float(torch.softmax(logits, dim=-1)[self.config.fg_token_id])
+                    time_token_id = self.config.time_token_ids[
+                        parsed.time_bins[position]
+                    ]
+                    score_values[position] = float(
+                        torch.softmax(logits, dim=-1)[time_token_id]
                     )
-                if len(score_values) == len(parsed.labels):
+                if score_valid:
                     foreground_scores = score_values
             candidates.append(
                 build_candidate_windows(
@@ -702,13 +719,14 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
         if active_indices:
             inferred_labels = torch.zeros_like(frame_bin_ids, dtype=torch.long)
             for batch_index, parsed in enumerate(parsed_results):
-                if parsed.valid:
+                candidate = candidates[batch_index]
+                if parsed.valid and candidate is not None:
                     valid_positions = frame_valid_mask[batch_index].bool().nonzero(
                         as_tuple=True
                     )[0]
                     valid_positions = valid_positions.to(inferred_labels.device)
                     inferred_labels[batch_index, valid_positions] = torch.tensor(
-                        parsed.labels,
+                        candidate.cleaned_labels,
                         dtype=torch.long,
                         device=inferred_labels.device,
                     )
@@ -758,21 +776,28 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
                 statuses.append("no_foreground")
             else:
                 statuses.append("ok")
-        return TimeLensRefineInferenceOutput(
+        return Coarse2RefineInferenceOutput(
             pred_start=pred_start,
             pred_end=pred_end,
             generated_ids=generated_ids,
             prompt_length=prompt_length,
             statuses=tuple(statuses),
+            parse_statuses=tuple(parsed.status for parsed in parsed_results),
             coarse_labels=tuple(tuple(values) for values in coarse_labels),
             coarse_time_bins=tuple(tuple(values) for values in coarse_bins),
             candidate_windows=tuple(candidates),
         )
 
+    @torch.no_grad()
+    def generate_time_refine(self, *args, **kwargs):
+        """Deprecated compatibility alias for ``generate_coarse2refine``."""
+
+        return self.generate_coarse2refine(*args, **kwargs)
+
     def _get_video_features(self, pixel_values_videos, video_grid_thw):
         if pixel_values_videos is None or video_grid_thw is None:
             raise ValueError(
-                "TimeRefine forward requires pixel_values_videos and video_grid_thw "
+                "Coarse2Refine forward requires pixel_values_videos and video_grid_thw "
                 "when visual_embeddings are not supplied."
             )
         core_model = _resolve_model_with_attr(self.base_model, "get_video_features")
@@ -1040,7 +1065,7 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
         return groups
 
     def _passthrough_output(self, base_outputs):
-        return TimeLensRefineOutput(
+        return Coarse2RefineOutput(
             loss=getattr(base_outputs, "loss", None),
             ntp_loss=getattr(base_outputs, "loss", None),
             logits=getattr(base_outputs, "logits", None),
@@ -1076,7 +1101,7 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
         duration: Optional[torch.Tensor] = None,
         visual_embeddings: Optional[torch.Tensor] = None,
         **kwargs,
-    ) -> TimeLensRefineOutput:
+    ) -> Coarse2RefineOutput:
         if self.base_model is None:
             raise RuntimeError("The base model has not been attached.")
         refine_fields = (
@@ -1111,17 +1136,19 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
             return self._passthrough_output(base_outputs)
         if any(value is None for value in refine_fields):
             raise ValueError(
-                "TimeRefine forward requires all frame metadata and GT fields: "
+                "Coarse2Refine forward requires all frame metadata and GT fields: "
                 "frame_bin_ids, frame_timestamps, frame_labels, frame_valid_mask, "
                 "gt_start, gt_end, duration."
             )
 
         if input_ids is None or attention_mask is None:
-            raise ValueError("TimeRefine forward requires input_ids and attention_mask.")
+            raise ValueError(
+                "Coarse2Refine forward requires input_ids and attention_mask."
+            )
         if labels is None:
-            raise ValueError("TimeRefine training requires labels for NTP loss.")
+            raise ValueError("Coarse2Refine training requires labels for NTP loss.")
         if video_grid_thw is None:
-            raise ValueError("TimeRefine forward requires video_grid_thw.")
+            raise ValueError("Coarse2Refine forward requires video_grid_thw.")
         batch_size = input_ids.shape[0]
         for name, value in {
             "frame_bin_ids": frame_bin_ids,
@@ -1234,19 +1261,37 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
             end_relative_time_groups=groups["end_relative_time_groups"],
             end_absolute_time_groups=groups["end_absolute_time_groups"],
         )
-        predicted_span = torch.stack(
+        predicted_span_normalized = torch.stack(
             [
                 refine_output.pred_start_q / float(TIME_BIN_COUNT - 1),
                 refine_output.pred_end_q / float(TIME_BIN_COUNT - 1),
             ],
             dim=-1,
         )
-        target_span = torch.stack(
+        target_span_normalized = torch.stack(
             [gt_start_flat / duration_flat, gt_end_flat / duration_flat],
             dim=-1,
         )
-        diou_loss = diou_loss_1d(predicted_span, target_span)
-        smooth_l1_loss = smooth_l1_boundary_loss(predicted_span, target_span)
+        diou_loss = diou_loss_1d(
+            predicted_span_normalized,
+            target_span_normalized,
+        )
+        pred_start = (
+            duration_flat
+            * refine_output.pred_start_q
+            / float(TIME_BIN_COUNT - 1)
+        )
+        pred_end = (
+            duration_flat
+            * refine_output.pred_end_q
+            / float(TIME_BIN_COUNT - 1)
+        )
+        predicted_span_seconds = torch.stack([pred_start, pred_end], dim=-1)
+        target_span_seconds = torch.stack([gt_start_flat, gt_end_flat], dim=-1)
+        smooth_l1_loss = smooth_l1_boundary_loss(
+            predicted_span_seconds,
+            target_span_seconds,
+        )
         total_loss = (
             self.config.lambda_ntp * base_outputs.loss
             + self.config.lambda_diou * diou_loss
@@ -1259,10 +1304,7 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
                 "temporal sequence edge.",
                 RuntimeWarning,
             )
-
-        pred_start = duration_flat * refine_output.pred_start_q / float(TIME_BIN_COUNT - 1)
-        pred_end = duration_flat * refine_output.pred_end_q / float(TIME_BIN_COUNT - 1)
-        return TimeLensRefineOutput(
+        return Coarse2RefineOutput(
             loss=total_loss,
             ntp_loss=base_outputs.loss,
             diou_loss=diou_loss,
@@ -1279,3 +1321,9 @@ class TimeLensRefineForConditionalGeneration(PreTrainedModel, GenerationMixin):
             past_key_values=base_outputs.past_key_values,
             window_edge_cases=groups["edge_cases"],
         )
+
+
+# Read-only compatibility alias for checkpoints/imports created before the
+# Coarse2Refine rename.  New model instances and checkpoints use the canonical
+# class name above.
+TimeLensRefineForConditionalGeneration = Coarse2RefineForConditionalGeneration

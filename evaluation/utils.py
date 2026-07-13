@@ -11,7 +11,7 @@ from training.data.time_refine import (
     extract_temporal_block_timestamps,
     quantize_time_bins,
 )
-from training.modeling.special_tokens import is_qwen25_timelens_3b
+from training.modeling.special_tokens import is_qwen25_coarse2refine
 
 GROUNDER_PROMPT = (
     "Please find the visual event described by the sentence '{}', determining its starting and ending times. "
@@ -26,6 +26,8 @@ GROUNDER_PROMPT_TEXT_TIMESTAMP = (
 
 
 def _is_qwen2_timelens_model(model_path: str) -> bool:
+    # Legacy video-format selection only; this is never used to select the
+    # Coarse2Refine model path.
     if not model_path:
         return False
     m = model_path.lower()
@@ -60,14 +62,22 @@ class GroundingDataset(Dataset):
         self._is_qwen2_timelens = _is_qwen2_timelens_model(self._format_model_path)
         self._is_qwen2 = _is_qwen2_model(self._format_model_path)
         self._is_qwen3 = _is_qwen3_model(self._format_model_path)
-        explicit_time_refine_target = getattr(args, "time_refine_target", None)
-        if explicit_time_refine_target is not None:
+        explicit_coarse2refine_target = getattr(
+            args, "coarse2refine_target", None
+        )
+        if explicit_coarse2refine_target is None and hasattr(
+            args, "time_refine_target"
+        ):
+            # Read-only compatibility for callers using the old evaluation
+            # attribute; checkpoint detection itself remains Coarse2Refine-only.
+            explicit_coarse2refine_target = getattr(args, "time_refine_target")
+        if explicit_coarse2refine_target is not None:
             # The evaluation entry point's checkpoint determination is
             # authoritative; only fall back to name-based detection when
             # older callers never set this field at all.
-            self._is_time_refine = bool(explicit_time_refine_target)
+            self._is_coarse2refine = bool(explicit_coarse2refine_target)
         else:
-            self._is_time_refine = is_qwen25_timelens_3b(
+            self._is_coarse2refine = is_qwen25_coarse2refine(
                 getattr(args, "model_id", None),
                 getattr(args, "model_path", None),
                 getattr(args, "processor_path", None),
@@ -84,8 +94,8 @@ class GroundingDataset(Dataset):
     def __getitem__(self, index):
         anno = copy.deepcopy(self.annos[index])
 
-        if self._is_time_refine:
-            return self._getitem_time_refine(anno)
+        if self._is_coarse2refine:
+            return self._getitem_coarse2refine(anno)
 
         video_path = anno["video_path"]
         query = anno["query"]
@@ -170,7 +180,7 @@ class GroundingDataset(Dataset):
 
         return {"inputs": inputs, "anno": anno}
 
-    def _getitem_time_refine(self, anno):
+    def _getitem_coarse2refine(self, anno):
         video_path = anno["video_path"]
         query = anno["query"]
         duration = float(anno["duration"])
@@ -191,11 +201,14 @@ class GroundingDataset(Dataset):
                 "content": build_time_refine_user_content(query, video_content),
             }
         ]
-        images, videos = process_vision_info(
+        images, videos, video_kwargs = process_vision_info(
             messages,
+            return_video_kwargs=True,
             return_video_metadata=True,
         )
         timestamps = extract_temporal_block_timestamps(videos)
+        processor_videos = [entry[0] for entry in videos]
+        processor_video_metadata = [entry[1] for entry in videos]
         time_bins = quantize_time_bins(timestamps, duration)
         text = self.processor.apply_chat_template(
             messages,
@@ -205,10 +218,12 @@ class GroundingDataset(Dataset):
         inputs = self.processor(
             text=[text],
             images=images,
-            videos=videos,
+            videos=processor_videos,
+            video_metadata=processor_video_metadata,
             padding=True,
             return_tensors="pt",
             do_resize=False,
+            **video_kwargs,
         )
         inputs["frame_bin_ids"] = time_bins.unsqueeze(0)
         inputs["frame_timestamps"] = timestamps.unsqueeze(0)

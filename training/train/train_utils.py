@@ -33,7 +33,10 @@ def print_trainable_parameters(model, training_args):
     merger_trainable = 0
     llm_total = 0
     llm_trainable = 0
+    refine_head_total = 0
+    refine_head_trainable = 0
     lora_params = 0
+    unclassified_params = 0
 
     if training_args.lora_enable and not hasattr(model, "time_refine_head"):
         model = model.base_model.model
@@ -53,20 +56,34 @@ def print_trainable_parameters(model, training_args):
         if param.requires_grad:
             trainable_params_non_lora += param_count
 
-        if name.startswith('visual.merger'):
+        # Coarse2Refine wraps the base model under ``_base_model``.  Normalize
+        # wrapper/PEFT prefixes before assigning the parameter to a component.
+        component_name = name
+        while component_name.startswith("_base_model."):
+            component_name = component_name[len("_base_model.") :]
+        while component_name.startswith("base_model."):
+            component_name = component_name[len("base_model.") :]
+
+        if component_name.startswith(("model.visual.merger.", "visual.merger.")):
             merger_total += param_count
             if param.requires_grad:
                 merger_trainable += param_count
-        elif name.startswith('visual.'):
+        elif component_name.startswith(("model.visual.", "visual.")):
             vision_encoder_total += param_count
             if param.requires_grad:
                 vision_encoder_trainable += param_count
-        elif name.startswith('model.') or name.startswith('lm_head'):
+        elif component_name.startswith(
+            ("model.language_model.", "language_model.", "model.", "lm_head")
+        ):
             llm_total += param_count
             if param.requires_grad:
                 llm_trainable += param_count
+        elif component_name.startswith("time_refine_head."):
+            refine_head_total += param_count
+            if param.requires_grad:
+                refine_head_trainable += param_count
         else:
-            print(f"Unrecognized parameter name: {name}.")
+            unclassified_params += 1
 
     print("=" * 80)
     print("MODEL PARAMETER ANALYSIS")
@@ -74,9 +91,17 @@ def print_trainable_parameters(model, training_args):
     print_component_stats("Vision Encoder", vision_encoder_trainable, vision_encoder_total)
     print_component_stats("Merger", merger_trainable, merger_total)
     print_component_stats("LLM", llm_trainable, llm_total)
+    print_component_stats(
+        "Coarse2Refine Head", refine_head_trainable, refine_head_total
+    )
     print_component_stats("Total (non-LoRA)", trainable_params_non_lora, total_params_non_lora)
     print_component_stats("LoRA", lora_params, lora_params)
     print_component_stats("Total (include LoRA)", trainable_params, total_params)
+    if unclassified_params:
+        print(
+            f"Parameter statistics skipped {unclassified_params} parameters "
+            "outside the known model components."
+        )
     print("=" * 80)
 
 

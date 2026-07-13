@@ -18,6 +18,8 @@ GROUNDING_PROMPT_TEXT_TIMESTAMP = (
 
 
 def _is_qwen2_timelens_model(model_name: str) -> bool:
+    # Legacy TimeLens formatting selection only; Coarse2Refine checkpoint
+    # detection is handled by training.model_loader.
     if not model_name:
         return False
     m = model_name.lower()

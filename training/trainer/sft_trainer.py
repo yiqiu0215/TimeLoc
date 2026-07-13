@@ -12,6 +12,104 @@ from training.train.train_utils import get_peft_state_maybe_zero_3, get_peft_sta
 class QwenSFTTrainer(Trainer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._task_loss_sums = {
+            "ntp_loss": None,
+            "diou_loss": None,
+            "smooth_l1_loss": None,
+        }
+        self._task_loss_update_weight = 0.0
+
+    def compute_loss(
+        self,
+        model,
+        inputs,
+        return_outputs=False,
+        num_items_in_batch=None,
+    ):
+        loss, outputs = super().compute_loss(
+            model,
+            inputs,
+            return_outputs=True,
+            num_items_in_batch=num_items_in_batch,
+        )
+        task_losses = {}
+        for name in self._task_loss_sums:
+            value = (
+                outputs.get(name)
+                if isinstance(outputs, dict)
+                else getattr(outputs, name, None)
+            )
+            if value is None:
+                break
+            task_losses[name] = value
+
+        if len(task_losses) == len(self._task_loss_sums):
+            accumulation_steps = (
+                max(
+                    int(
+                        getattr(
+                            self,
+                            "current_gradient_accumulation_steps",
+                            self.args.gradient_accumulation_steps,
+                        )
+                    ),
+                    1,
+                )
+                if model.training
+                else 1
+            )
+            ntp_scale = 1.0
+            if (
+                self.args.average_tokens_across_devices
+                and self.model_accepts_loss_kwargs
+                and num_items_in_batch is not None
+            ):
+                ntp_scale = (
+                    self.accelerator.num_processes
+                    if self.args.n_gpu <= 1
+                    else self.args.n_gpu
+                )
+
+            normalized_losses = {
+                "ntp_loss": task_losses["ntp_loss"] * ntp_scale,
+                "diou_loss": task_losses["diou_loss"] / accumulation_steps,
+                "smooth_l1_loss": (
+                    task_losses["smooth_l1_loss"] / accumulation_steps
+                ),
+            }
+            config = self.model.config
+            loss = (
+                config.lambda_ntp * normalized_losses["ntp_loss"]
+                + config.lambda_diou * normalized_losses["diou_loss"]
+                + config.lambda_reg * normalized_losses["smooth_l1_loss"]
+            )
+
+            if model.training:
+                for name, value in normalized_losses.items():
+                    value = value.detach().float()
+                    current = self._task_loss_sums[name]
+                    self._task_loss_sums[name] = (
+                        value if current is None else current + value
+                    )
+                self._task_loss_update_weight += 1.0 / accumulation_steps
+        return (loss, outputs) if return_outputs else loss
+
+    def log(self, logs, start_time=None):
+        if "loss" in logs and self._task_loss_update_weight:
+            for name, total in self._task_loss_sums.items():
+                logs[name] = round(
+                    float(
+                        (
+                            self._nested_gather(total).mean()
+                            / self._task_loss_update_weight
+                        ).item()
+                    ),
+                    4,
+                )
+                self._task_loss_sums[name] = None
+            self._task_loss_update_weight = 0.0
+        return super().log(logs, start_time=start_time)
+
     def create_optimizer(self):
         if is_sagemaker_mp_enabled():
             return super().create_optimizer()

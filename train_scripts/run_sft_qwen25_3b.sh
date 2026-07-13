@@ -5,9 +5,9 @@ set -euo pipefail
 export PYTHONPATH="./:${PYTHONPATH:-}"
 
 model_path="/root/autodl-tmp/hf/hub/models--Qwen--Qwen2.5-VL-3B-Instruct/snapshots/66285546d2b821cf421d4f5eb2576359d3770cd3"
-processor_path="TencentARC/TimeLens-7B"
+processor_path=""
 datasets="gemini_refined_data"
-model_id="timelens-3b"
+model_id="qwen25-vl-3b-coarse2refine"
 min_tokens=64
 total_tokens=14336
 fps=2
@@ -20,7 +20,7 @@ num_devices=2
 epochs=1
 target_size=30000
 deepspeed_config="scripts/zero3.json"
-output_root="/root/autodl-tmp/output/TimeLens-3B/sft"
+output_root="/root/autodl-tmp/output/Coarse2Refine/sft"
 report_to="none"
 
 while [[ $# -gt 0 ]]; do
@@ -48,12 +48,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -z "${processor_path}" ]]; then
+  processor_path="${model_path}"
+fi
+
 grad_accum_steps=$((global_batch_size / (batch_per_device * num_devices)))
 if [[ -z "${fps_max_frames}" ]]; then
   fps_max_frames=$((total_tokens / min_tokens * 2))
 fi
 run_tag="$(date +%Y%m%d-%H%M)"
-run_name="sft-${run_tag}_MAXFRAMES-${fps_max_frames}_FPS-${fps}_TOTALtokens-${total_tokens}_MINtokens-${min_tokens}"
+run_name="Coarse2Refine-sft-${run_tag}_MAXFRAMES-${fps_max_frames}_FPS-${fps}_TOTALtokens-${total_tokens}_MINtokens-${min_tokens}"
 output_dir="${output_root}/${run_name}"
 
 mkdir -p "${output_dir}"
@@ -101,6 +105,6 @@ deepspeed training/train/train_sft_timelens.py \
   --dataloader_num_workers 4 \
   --seed "${seed}" \
   --report_to "${report_to}" \
-  --run_name "${model_id}-sft/${run_name}" \
+  --run_name "Coarse2Refine/${run_name}" \
   --logging_dir wandb \
   --save_only_model True
