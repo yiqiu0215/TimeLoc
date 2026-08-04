@@ -11,8 +11,8 @@ def parse_query(query):
 
 
 class ActivitynetTimeLensDataset:
-    ANNO_PATH_TEST = "/root/autodl-tmp/datasets/TimeLens-Bench/activitynet-timelens.json"
-    VIDEO_ROOT = "/root/autodl-tmp/datasets/TimeLens-Bench/videos/activitynet"
+    ANNO_PATH_TEST = "/workspace/s/lzw/datasets/TimeLens-Bench/activitynet-timelens.json"
+    VIDEO_ROOT = "/workspace/s/lzw/datasets/TimeLens-Bench/videos/activitynet"
     DATASET_SOURCE = "ActivityNet-TimeLens"
 
     @classmethod
@@ -43,20 +43,20 @@ class ActivitynetTimeLensDataset:
 
 
 class QVHighlightsTimeLensDataset(ActivitynetTimeLensDataset):
-    ANNO_PATH_TEST = "/root/autodl-tmp/datasets/TimeLens-Bench/qvhighlights-timelens.json"
-    VIDEO_ROOT = "/root/autodl-tmp/datasets/TimeLens-Bench/videos/qvhighlights"
+    ANNO_PATH_TEST = "/workspace/s/lzw/datasets/TimeLens-Bench/qvhighlights-timelens.json"
+    VIDEO_ROOT = "/workspace/s/lzw/datasets/TimeLens-Bench/videos/qvhighlights"
     DATASET_SOURCE = "QVHighlights-TimeLens"
 
 
 class CharadesTimeLensDataset(ActivitynetTimeLensDataset):
-    ANNO_PATH_TEST = "/root/autodl-tmp/datasets/TimeLens-Bench/charades-timelens.json"
-    VIDEO_ROOT = "/root/autodl-tmp/datasets/TimeLens-Bench/videos/charades"
+    ANNO_PATH_TEST = "/workspace/s/lzw/datasets/TimeLens-Bench/charades-timelens.json"
+    VIDEO_ROOT = "/workspace/s/lzw/datasets/TimeLens-Bench/videos/charades"
     DATASET_SOURCE = "Charades-TimeLens"
 
 
 class TimeLens100KDataset:
-    ANNO_PATH_TRAIN = "/root/autodl-tmp/datasets/TimeLens-100K/timelens-100k.jsonl"
-    VIDEO_ROOT = "/root/autodl-tmp/datasets/TimeLens-100K/videos"
+    ANNO_PATH_TRAIN = "/workspace/s/lzw/datasets/TimeLens-100K/timelens-100k.jsonl"
+    VIDEO_ROOT = "/workspace/s/lzw/datasets/TimeLens-100K/videos"
 
     @classmethod
     def load_annos(self, split="train"):

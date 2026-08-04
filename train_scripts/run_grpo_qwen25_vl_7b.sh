@@ -111,7 +111,7 @@ deepspeed training/train/train_grpo_timelens.py \
   --save_total_limit 5 \
   --dataloader_num_workers 4 \
   --log_completions True \
-  --use_liger False \
+  --use_liger_kernel False \
   --use_liger_loss False \
   --reward_funcs tiou \
   --num_generations 8 \

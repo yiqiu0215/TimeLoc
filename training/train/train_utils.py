@@ -1,6 +1,7 @@
 import transformers
 import torch
 import logging
+from importlib.metadata import version
 
 
 def print_component_stats(name, trainable, total):
@@ -78,6 +79,32 @@ def print_trainable_parameters(model, training_args):
     print_component_stats("LoRA", lora_params, lora_params)
     print_component_stats("Total (include LoRA)", trainable_params, total_params)
     print("=" * 80)
+
+
+def verify_liger_kernel_applied(model, training_args):
+    if not training_args.use_liger_kernel:
+        return
+
+    base_model = model.get_base_model() if hasattr(model, "get_base_model") else model
+    patched_modules = [
+        name
+        for name, module in base_model.named_modules()
+        if module._get_name().startswith("Liger")
+    ]
+    forward_module = getattr(base_model.forward, "__module__", "")
+    forward_patched = forward_module.startswith("liger_kernel.")
+    if not patched_modules and not forward_patched:
+        raise RuntimeError(
+            "use_liger_kernel=True, but no Liger patch was detected after Trainer "
+            "initialization. Check the liger-kernel and Transformers versions."
+        )
+
+    print(
+        "Liger kernel enabled: "
+        f"version={version('liger-kernel')}, "
+        f"patched_modules={len(patched_modules)}, "
+        f"forward_patched={forward_patched}"
+    )
 
 
 def maybe_zero_3(param, ignore_status=False, name=None, device=torch.device('cpu')):

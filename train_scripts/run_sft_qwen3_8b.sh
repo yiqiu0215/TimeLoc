@@ -63,7 +63,7 @@ deepspeed training/train/train_sft_timelens.py \
   --disable_flash_attn2 False \
   --tf32 True \
   --gradient_checkpointing True \
-  --use_liger True \
+  --use_liger_kernel True \
   --deepspeed "${deepspeed_config}" \
   --model_name_or_path "${model_path}" \
   --model_id "${model_id}" \

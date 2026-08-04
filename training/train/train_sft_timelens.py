@@ -23,6 +23,7 @@ from training.train.train_utils import (
     get_peft_state_non_lora_maybe_zero_3,
     print_trainable_parameters,
     safe_save_model_for_hf_trainer,
+    verify_liger_kernel_applied,
 )
 from training.model_loader import get_config_class, get_model_class, get_processor_class
 
@@ -130,7 +131,8 @@ def train():
         )
 
     model_cls = get_model_class(model_args.model_name_or_path)
-    processor_cls = get_processor_class(model_args.model_name_or_path)
+    processor_source = model_args.processor_path or model_args.model_name_or_path
+    processor_cls = get_processor_class(processor_source)
     config_cls = get_config_class(model_args.model_name_or_path)
 
     config = config_cls.from_pretrained(
@@ -211,7 +213,7 @@ def train():
     # `do_resize=False` at the processor call sites instead of persisting it
     # into the saved processor defaults.
     processor = processor_cls.from_pretrained(
-        model_args.model_name_or_path, trust_remote_code=True
+        processor_source, trust_remote_code=True
     )
 
     if training_args.bits in [4, 8]:
@@ -241,6 +243,7 @@ def train():
             processor, model.config, model_args, data_args, training_args
         ),
     )
+    verify_liger_kernel_applied(trainer.model, training_args)
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
         trainer.train(resume_from_checkpoint=True)
