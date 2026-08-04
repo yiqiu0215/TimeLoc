@@ -99,7 +99,7 @@ if __name__ == "__main__":
         dataset,
         batch_size=1,
         shuffle=False,
-        num_workers=10,
+        num_workers=4,
         prefetch_factor=2,
         pin_memory=True,
         collate_fn=lambda x: x[0],

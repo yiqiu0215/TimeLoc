@@ -59,7 +59,6 @@ class TrainingArguments(HFTrainingArguments):
         metadata={"help": "List of namespan to exclude for LoRA"},
     )
     num_lora_modules: int = -1
-    use_liger: bool = True
 
 
 @dataclass
@@ -113,7 +112,6 @@ class GRPOArguments(GRPOConfigTRL):
     beta: float = field(default=0.0)
     num_iterations: int = field(default=1)
 
-    use_liger: bool = field(default=False)
     use_liger_loss: bool = field(default=False)
     temperature: float = 1.0
     top_p: float = 1.0
@@ -140,6 +138,12 @@ class DataArguments:
     fps_max_frames: Optional[int] = None
 
     raw_anno_path: Optional[str] = field(default=None)
+    gebplus_annotation_path: str = field(
+        default="/workspace/s/lzw/datasets/GEB+/train.json"
+    )
+    gebplus_video_root: str = field(
+        default="/workspace/s/lzw/datasets/GEB+/videos"
+    )
     fixed_gaussian_sampling: bool = field(default=False)
     gaussian_filter_mean: Optional[float] = None
     gaussian_filter_std: Optional[float] = None

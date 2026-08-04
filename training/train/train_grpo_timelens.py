@@ -23,6 +23,7 @@ from training.train.train_utils import (
     get_peft_state_non_lora_maybe_zero_3,
     safe_save_model_for_hf_trainer,
     print_trainable_parameters,
+    verify_liger_kernel_applied,
 )
 from training.train.reward_funcs import load_reward_funcs
 from training.model_loader import get_model_class, get_processor_class, get_config_class
@@ -240,6 +241,7 @@ def train():
         args=training_args,
         peft_config=peft_config,
     )
+    verify_liger_kernel_applied(trainer.model, training_args)
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
         trainer.train(resume_from_checkpoint=True)
