@@ -8,11 +8,12 @@ import nncore
 import torch
 from nncore.engine import set_random_seed
 from torch.utils.data import DataLoader
-from transformers import AutoModelForImageTextToText, AutoProcessor
+from transformers import AutoConfig, AutoProcessor
 
 from evaluation.utils import GroundingDataset
 from timelens.dataset.timelens_data import DATASET_DICT
 from timelens.utils import extract_time
+from training.model_loader import get_model_class
 
 
 def parse_args():
@@ -24,9 +25,12 @@ def parse_args():
         default=None,
         help="Processor checkpoint path. For TimeLens-3B, set to TencentARC/TimeLens-7B.",
     )
-    parser.add_argument("--min_tokens", type=int, default=16)
-    parser.add_argument("--total_tokens", type=int, default=3584)
-    parser.add_argument("--fps", type=int, default=2)
+    parser.add_argument("--min_tokens", type=int, default=None)
+    parser.add_argument("--total_tokens", type=int, default=None)
+    parser.add_argument("--fps", type=float, default=None)
+    parser.add_argument("--fps_max_frames", type=int, default=None)
+    parser.add_argument("--use_residual_tokens", action="store_true")
+    parser.add_argument("--residual_num_diffs", type=int, default=4)
 
     parser.add_argument("--dataset", required=True, help="Dataset name")
     parser.add_argument("--split", default="test")
@@ -65,9 +69,35 @@ if __name__ == "__main__":
         'Device should be set to "auto" for multi-GPU evaluation.'
     )
 
-    # Load model
-    model = AutoModelForImageTextToText.from_pretrained(
+    config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
+    args.use_residual_tokens = args.use_residual_tokens or bool(
+        getattr(config, "use_residual_tokens", False)
+    )
+    if args.use_residual_tokens:
+        args.residual_num_diffs = int(getattr(config, "residual_num_diffs", 4))
+        if args.min_tokens is None:
+            args.min_tokens = int(getattr(config, "minimum_tokens_per_block", 64))
+        if args.total_tokens is None:
+            args.total_tokens = int(
+                getattr(config, "combined_visual_token_budget", 14336)
+            )
+        if args.fps is None:
+            args.fps = float(getattr(config, "rit_sampling_fps", 1.0))
+        if args.fps_max_frames is None:
+            args.fps_max_frames = getattr(config, "rit_fps_max_frames", None)
+        if args.fps_max_frames is None:
+            max_pseudo_blocks = args.total_tokens // args.min_tokens
+            args.fps_max_frames = ((max_pseudo_blocks + 1) // 2) * 2
+    else:
+        args.min_tokens = 16 if args.min_tokens is None else args.min_tokens
+        args.total_tokens = 3584 if args.total_tokens is None else args.total_tokens
+        args.fps = 2.0 if args.fps is None else args.fps
+    model_cls = get_model_class(
+        args.model_path, use_residual_tokens=args.use_residual_tokens
+    )
+    model = model_cls.from_pretrained(
         args.model_path,
+        config=config,
         dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
         device_map=args.device,

@@ -43,8 +43,14 @@ class HybridDataCollator:
         for key in (
             "pixel_values",
             "pixel_values_videos",
+            "pixel_values_residuals",
             "image_grid_thw",
             "video_grid_thw",
+            "rgb_video_grid_thw",
+            "residual_grid_thw",
+            "rgb_temporal_midpoints",
+            "residual_temporal_midpoints",
+            "temporal_midpoints",
         ):
             if key in batch[0]:
                 data[key] = torch.cat([d[key] for d in batch])

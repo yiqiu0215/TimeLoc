@@ -68,6 +68,19 @@ def configure_vision_tower(model, training_args, compute_dtype, device):
 
     merger_params = model.visual.merger.parameters()
     set_requires_grad(merger_params, not training_args.freeze_merger)
+    if hasattr(model.visual, "deepstack_merger_list"):
+        set_requires_grad(
+            model.visual.deepstack_merger_list.parameters(),
+            not training_args.freeze_merger,
+        )
+    for module_name in ("time_position_embedding", "residual_norm"):
+        module = getattr(model.visual, module_name, None)
+        if module is not None:
+            set_requires_grad(module.parameters(), True)
+    for parameter_name in ("residual_gate", "residual_modality_embedding"):
+        parameter = getattr(model.visual, parameter_name, None)
+        if parameter is not None:
+            parameter.requires_grad = True
 
 
 def configure_llm(model, training_args):
@@ -83,6 +96,21 @@ def train():
 
     parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+
+    if data_args.use_residual_tokens:
+        if training_args.lora_enable:
+            raise ValueError("RIT two-stage training requires direct parameter training, not LoRA.")
+        if not training_args.freeze_vision_tower:
+            raise ValueError("RIT shared-patch training requires freeze_vision_tower=True.")
+        if training_args.freeze_llm or training_args.freeze_merger:
+            raise ValueError("RIT requires the LLM and visual mergers to remain trainable.")
+        if training_args.use_liger_kernel:
+            liger_config = dict(training_args.liger_kernel_config or {})
+            liger_config.setdefault("rope", True)
+            liger_config.setdefault("rms_norm", True)
+            liger_config.setdefault("cross_entropy", True)
+            liger_config["fused_linear_cross_entropy"] = False
+            training_args.liger_kernel_config = liger_config
 
     if training_args.lora_enable and not training_args.freeze_llm:
         raise ValueError("If `lora_enable` is True, `freeze_llm` must also be True.")
@@ -130,7 +158,10 @@ def train():
             )
         )
 
-    model_cls = get_model_class(model_args.model_name_or_path)
+    model_cls = get_model_class(
+        model_args.model_name_or_path,
+        use_residual_tokens=data_args.use_residual_tokens,
+    )
     processor_source = model_args.processor_path or model_args.model_name_or_path
     processor_cls = get_processor_class(processor_source)
     config_cls = get_config_class(model_args.model_name_or_path)
@@ -138,6 +169,47 @@ def train():
     config = config_cls.from_pretrained(
         model_args.model_name_or_path, trust_remote_code=True
     )
+    if data_args.use_residual_tokens:
+        if config.model_type != "qwen3_vl":
+            raise ValueError(
+                f"RIT requires a Qwen3-VL checkpoint, got model_type={config.model_type}."
+            )
+        residual_config = {
+            "use_residual_tokens": True,
+            "rit_architecture_version": "shared_rgb_patch_accumulate_v2",
+            "residual_num_diffs": data_args.residual_num_diffs,
+            "residual_in_channels": 3,
+            "residual_gate_init": data_args.residual_gate_init,
+            "time_embedding_dim": data_args.time_embedding_dim,
+            "use_true_midpoint_time_embedding": True,
+            "combined_visual_token_budget": data_args.total_tokens,
+            "minimum_tokens_per_block": data_args.min_tokens,
+            "rit_sampling_fps": data_args.fps,
+            "rit_fps_max_frames": data_args.fps_max_frames,
+        }
+        if getattr(config, "use_residual_tokens", False):
+            if getattr(config, "rit_architecture_version", None) != "shared_rgb_patch_accumulate_v2":
+                raise ValueError(
+                    "The checkpoint uses the retired residual-specific patch embedding "
+                    "and is incompatible with shared_rgb_patch_accumulate_v2."
+                )
+            mismatched = {
+                name: (getattr(config, name), value)
+                for name, value in residual_config.items()
+                if hasattr(config, name) and getattr(config, name) != value
+            }
+            if mismatched:
+                details = ", ".join(
+                    f"{name}: checkpoint={saved}, requested={requested}"
+                    for name, (saved, requested) in mismatched.items()
+                )
+                raise ValueError(
+                    "RIT checkpoint structure/config must remain unchanged between stages: "
+                    + details
+                )
+        for name, value in residual_config.items():
+            setattr(config, name, value)
+            setattr(config.vision_config, name, value)
 
     model = model_cls.from_pretrained(
         model_args.model_name_or_path,
@@ -156,6 +228,30 @@ def train():
     configure_vision_tower(
         model_to_configure, training_args, compute_dtype, training_args.device
     )
+    if data_args.use_residual_tokens:
+        trainable_visual_names = {
+            name
+            for name, parameter in model.visual.named_parameters()
+            if parameter.requires_grad
+        }
+        allowed_trainable_prefixes = (
+            "merger.",
+            "deepstack_merger_list.",
+            "time_position_embedding.",
+            "residual_norm.",
+            "residual_gate",
+            "residual_modality_embedding",
+        )
+        unexpected = sorted(
+            name
+            for name in trainable_visual_names
+            if not name.startswith(allowed_trainable_prefixes)
+        )
+        if unexpected:
+            raise RuntimeError(
+                "Frozen ViT has unexpected trainable parameters: "
+                + ", ".join(unexpected[:10])
+            )
 
     if training_args.bits in [4, 8]:
         model.config.torch_dtype = (
@@ -275,13 +371,16 @@ def train():
         safe_save_model_for_hf_trainer(trainer, output_dir=training_args.output_dir)
 
     if local_rank == 0 or local_rank == -1:
-        import shutil
+        processor.save_pretrained(training_args.output_dir)
 
-        checkpoints_sorted = trainer._sorted_checkpoints(
-            use_mtime=False, output_dir=training_args.output_dir
-        )
-        for checkpoint in checkpoints_sorted:
-            shutil.rmtree(checkpoint, ignore_errors=True)
+        if not training_args.keep_intermediate_checkpoints:
+            import shutil
+
+            checkpoints_sorted = trainer._sorted_checkpoints(
+                use_mtime=False, output_dir=training_args.output_dir
+            )
+            for checkpoint in checkpoints_sorted:
+                shutil.rmtree(checkpoint, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -9,11 +9,19 @@ from torch.utils.data import Dataset
 
 from timelens.dataset.timelens_data import TimeLens100KDataset, parse_query
 from training.data.preprocess import preprocess
+from training.data.residual_video import prepare_rit_video_inputs
 
 GROUNDING_PROMPT = (
     "Please find the visual event described by the sentence '{}', determining its starting and ending times. "
     "The format should be: 'The event happens in <start time> - <end time> seconds'."
 )
+
+RIT_GROUNDING_PROMPT = (
+    "The visual input is an interleaved sequence of RGB frame blocks and "
+    "accumulated residual-motion blocks, ordered as RGB, residual, RGB, residual, and so on. "
+    "Each residual block accumulates uniformly sampled frame differences and describes the visual change between its adjacent RGB "
+    "blocks, and the timestamp before every block is its real temporal midpoint. "
+) + GROUNDING_PROMPT
 
 # prompt for Qwen2.5-VL TimeLens models with interleaved textual timestamps
 GROUNDING_PROMPT_TEXT_TIMESTAMP = (
@@ -179,7 +187,9 @@ class GroundingDataset(Dataset):
         self._is_qwen2 = _is_qwen2_model(self._format_model_path)
 
         if dataset_name in ("gemini_refined_data", "timelens-100k"):
-            base_annos = TimeLens100KDataset.load_annos(split="train")
+            base_annos = TimeLens100KDataset.load_annos(
+                split="train", data_root=data_args.timelens_data_root
+            )
             if dataset_name == "gemini_refined_data":
                 raw_annos = [
                     anno
@@ -328,11 +338,12 @@ class GroundingDataset(Dataset):
     def _getitem_sft(self, idx):
         anno = copy.deepcopy(self.annos[idx])
         spans = _normalize_spans(anno["span"])
-        prompt = (
-            GROUNDING_PROMPT_TEXT_TIMESTAMP
-            if self._is_qwen2_timelens
-            else GROUNDING_PROMPT
-        )
+        if self.data_args.use_residual_tokens:
+            prompt = RIT_GROUNDING_PROMPT
+        elif self._is_qwen2_timelens:
+            prompt = GROUNDING_PROMPT_TEXT_TIMESTAMP
+        else:
+            prompt = GROUNDING_PROMPT
 
         messages = [
             {
@@ -345,6 +356,28 @@ class GroundingDataset(Dataset):
                 ],
             }
         ]
+
+        if self.data_args.use_residual_tokens:
+            if self._is_qwen2 or self._is_qwen2_timelens:
+                raise ValueError("Residual-interleaved inputs require Qwen3-VL.")
+            response = _format_response(spans)
+            messages.append({"role": "assistant", "content": response})
+            inputs = prepare_rit_video_inputs(
+                self.processor,
+                messages,
+                residual_num_diffs=self.data_args.residual_num_diffs,
+                min_tokens=self.data_args.min_tokens,
+                total_tokens=self.data_args.total_tokens,
+            )
+            text = inputs.pop("rit_text")
+            inputs["input_ids"] = inputs["input_ids"][0]
+            inputs["labels"] = preprocess(
+                inputs["input_ids"],
+                text,
+                self.processor.tokenizer,
+                self.model_args.conv_type,
+            )
+            return inputs
 
         if self._is_qwen2_timelens:
             images, videos = process_vision_info(

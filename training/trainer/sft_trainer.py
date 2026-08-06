@@ -19,12 +19,27 @@ class QwenSFTTrainer(Trainer):
         if self.optimizer is None:
             decay_parameters = get_parameter_names(opt_model, ALL_LAYERNORM_LAYERS)
             decay_parameters = [n for n in decay_parameters if "bias" not in n]
-            visual_parameters = [n for n, _ in opt_model.named_parameters() if "visual" in n and "merger" not in n] if self.args.vision_lr else []
+            residual_parameters = [
+                n
+                for n, _ in opt_model.named_parameters()
+                if "residual_" in n or "time_position_embedding" in n
+            ] if self.args.residual_lr else []
+            visual_parameters = [
+                n
+                for n, _ in opt_model.named_parameters()
+                if "visual" in n
+                and "merger" not in n
+                and n not in residual_parameters
+            ] if self.args.vision_lr else []
             merger_parameters = [n for n, _ in opt_model.named_parameters() if "merger" in n] if self.args.merger_lr else []
-            special = merger_parameters + visual_parameters
+            special = merger_parameters + visual_parameters + residual_parameters
             if special:
                 grps = [{"params": [p for n, p in opt_model.named_parameters() if n in decay_parameters and n not in special and p.requires_grad], "weight_decay": self.args.weight_decay}, {"params": [p for n, p in opt_model.named_parameters() if n not in decay_parameters and n not in special and p.requires_grad], "weight_decay": 0.0}]
-                for lr, names in [(self.args.vision_lr, visual_parameters), (self.args.merger_lr, merger_parameters)]:
+                for lr, names in [
+                    (self.args.vision_lr, visual_parameters),
+                    (self.args.merger_lr, merger_parameters),
+                    (self.args.residual_lr, residual_parameters),
+                ]:
                     if lr and names:
                         grps.extend([{"params": [p for n, p in opt_model.named_parameters() if n in decay_parameters and n in names and p.requires_grad], "weight_decay": self.args.weight_decay, "lr": lr}, {"params": [p for n, p in opt_model.named_parameters() if n not in decay_parameters and n in names and p.requires_grad], "weight_decay": 0.0, "lr": lr}])
             else:

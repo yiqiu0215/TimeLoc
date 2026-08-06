@@ -20,6 +20,66 @@ TimeLens rethinks video temporal grounding (VTG) with MLLMs along two axes:
 - **Data Quality**. We expose critical quality issues in existing VTG benchmarks and propose quality-assured datasets for both training and evaluation.
 - **Algorithmic Design**. Building upon reliable data, we explore effective timestamp encoding strategies and training recipes, achieving state-of-the-art performance among open-source models.
 
+## 🧪 TimeLoc-motion: Residual-Interleaved Temporal Tokens
+
+This branch contains the research implementation of **RIT-Qwen3VL**, a
+Qwen3-VL-2B-based extension for explicit inter-block motion modeling. The
+implementation is experimental; no performance improvement is claimed before
+the corresponding training and evaluation runs are completed.
+
+### Method overview
+
+- Sample RGB frames at the configured FPS and form one RGB temporal block from
+  every two frames, following Qwen3-VL's `temporal_patch_size=2`.
+- Uniformly sample five time points between adjacent RGB blocks, compute four
+  consecutive frame differences, and accumulate them into one three-channel
+  residual block. With linear signed differences, this sum is mathematically
+  equivalent to the interval endpoint difference.
+- Duplicate each accumulated residual along the temporal dimension and encode
+  it with the same frozen Conv3D Patch Embedding used by RGB. No separate
+  residual Patch Embedding is introduced.
+- Interleave the visual sequence as `RGB, residual, RGB, residual, ...`. RGB and
+  residual tokens share the configured total visual-token budget and both are
+  included in the ViT and DeepStack features.
+- Add a continuous temporal embedding derived from each block's real interval
+  midpoint. The textual timestamp preceding each visual block uses the same
+  midpoint, and the prompt explicitly describes the interleaved input format.
+- Freeze the shared Patch Embedding and ViT blocks. Train the LLM, Patch Merger,
+  DeepStack Merger, continuous-time embedding, residual LayerNorm, gate, and
+  modality embedding. Liger kernels are enabled while fused linear
+  cross-entropy is disabled to preserve the custom RIT forward path.
+
+The complete architecture and experiment assumptions are documented in
+[`ideas_docs/residual_interleaved_temporal_tokens/design.md`](./ideas_docs/residual_interleaved_temporal_tokens/design.md).
+
+### Two-stage training
+
+1. **Stage 1 — GEB+**: given a boundary timestamp and subject, generate the
+   subject states immediately before and after the boundary.
+2. **Stage 2 — TimeLens-100K 20K subset**: load the complete Stage 1 checkpoint
+   and train temporal grounding on the duration-balanced, visual-only 20K
+   subset. Audio input is not used.
+
+Run both stages sequentially:
+
+```bash
+bash train_scripts/run_two_stage_rit_qwen3_2b.sh \
+  --model_path "/path/to/Qwen3-VL-2B-Instruct" \
+  --gebplus_annotation_path "/path/to/GEB+/train.json" \
+  --gebplus_video_root "/path/to/GEB+/videos" \
+  --timelens_data_root "/path/to/TimeLens-100K" \
+  --target_size 20000
+```
+
+Start only Stage 2 from a completed Stage 1 checkpoint:
+
+```bash
+bash train_scripts/run_stage2_rit_qwen3_2b.sh \
+  --stage1_model_path "/path/to/run/stage1-gebplus" \
+  --timelens_data_root "/path/to/TimeLens-100K" \
+  --target_size 20000
+```
+
 ## 📚 Quick Navigation
 In this repository, we release:
 - 🤖 **TimeLens Models**: State-of-the-art open-source models for video temporal grounding.

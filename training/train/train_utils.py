@@ -93,6 +93,11 @@ def verify_liger_kernel_applied(model, training_args):
     ]
     forward_module = getattr(base_model.forward, "__module__", "")
     forward_patched = forward_module.startswith("liger_kernel.")
+    if getattr(base_model.config, "use_residual_tokens", False) and forward_patched:
+        raise RuntimeError(
+            "Liger replaced the custom RIT forward. "
+            "Set fused_linear_cross_entropy=False for residual-interleaved training."
+        )
     if not patched_modules and not forward_patched:
         raise RuntimeError(
             "use_liger_kernel=True, but no Liger patch was detected after Trainer "
