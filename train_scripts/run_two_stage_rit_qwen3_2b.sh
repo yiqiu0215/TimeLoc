@@ -10,7 +10,6 @@ gebplus_video_root="/workspace/s/lzw/datasets/GEB+/videos"
 timelens_data_root="/workspace/s/lzw/datasets/TimeLens-100K"
 fps=1
 residual_num_diffs=4
-time_embedding_dim=128
 min_tokens=64
 total_tokens=14336
 fps_max_frames=""
@@ -36,7 +35,6 @@ while [[ $# -gt 0 ]]; do
     --timelens_data_root) timelens_data_root="$2"; shift 2 ;;
     --fps) fps="$2"; shift 2 ;;
     --residual_num_diffs) residual_num_diffs="$2"; shift 2 ;;
-    --time_embedding_dim) time_embedding_dim="$2"; shift 2 ;;
     --min_tokens) min_tokens="$2"; shift 2 ;;
     --total_tokens) total_tokens="$2"; shift 2 ;;
     --fps_max_frames) fps_max_frames="$2"; shift 2 ;;
@@ -130,7 +128,6 @@ deepspeed training/train/train_sft_timelens.py \
   --gebplus_video_root "${gebplus_video_root}" \
   --use_residual_tokens True \
   --residual_num_diffs "${residual_num_diffs}" \
-  --time_embedding_dim "${time_embedding_dim}" \
   --remove_unused_columns False \
   --output_dir "${stage1_output}" \
   --min_tokens "${min_tokens}" \
@@ -191,7 +188,6 @@ deepspeed training/train/train_sft_timelens.py \
   --target_size "${target_size}" \
   --use_residual_tokens True \
   --residual_num_diffs "${residual_num_diffs}" \
-  --time_embedding_dim "${time_embedding_dim}" \
   --remove_unused_columns False \
   --output_dir "${stage2_output}" \
   --min_tokens "${min_tokens}" \

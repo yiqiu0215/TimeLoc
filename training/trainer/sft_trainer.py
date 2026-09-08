@@ -22,7 +22,7 @@ class QwenSFTTrainer(Trainer):
             residual_parameters = [
                 n
                 for n, _ in opt_model.named_parameters()
-                if "residual_" in n or "time_position_embedding" in n
+                if "residual_" in n
             ] if self.args.residual_lr else []
             visual_parameters = [
                 n

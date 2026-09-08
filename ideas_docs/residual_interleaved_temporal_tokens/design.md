@@ -20,16 +20,16 @@
 4. 将 4 个帧差逐元素累加为一个三通道 accumulated residual，不再拼接为 12 通道。
 5. Residual 不再使用额外 Patch Embedding；将单个 accumulated residual 在时间维复制两次，以适配原始 `temporal_patch_size=2`，并与 RGB 共用同一个 Conv3D Patch Embedding。
 6. RGB Patch Embedding、ViT blocks 和原始视觉位置编码在两个训练阶段均冻结。
-7. Patch Merger、DeepStack Merger、连续时间编码、residual gate、residual LayerNorm、residual modality embedding 和 LLM 保持可训练；不使用 LoRA。
+7. Patch Merger、DeepStack Merger、residual gate、residual LayerNorm、residual modality embedding 和 LLM 保持可训练；不使用 LoRA。
 8. RGB 与 residual 按 `RGB, residual, RGB, residual, ...` 交错，并共同占用 `total_tokens` 视觉 token budget。
-9. RGB block 与 residual block 的内部连续时间编码均使用对应真实时间区间的中点；提示词中的文本时间戳也使用同一中点。
+9. RGB block 与 residual block 仅在提示词中使用对应真实时间区间的中点时间戳；视觉 token 保留原有位置编码。
 10. Prompt 明确提示模型：视觉输入是 RGB 帧块和 accumulated residual 块交错排列的序列。
 11. Stage 1 使用 GEB+ 的“给定 boundary timestamp，生成前后状态”任务；Stage 2 加载 Stage 1 完整 checkpoint，在 TimeLens-100K 来源的约 20K duration-balanced visual-only 子集上训练。
 12. 不使用音频输入和纯音频证据 query。
 
 ## 3. 改进动机
 
-Qwen3-VL 原始视频输入将两帧通过 Conv3D Patch Embedding 合并为一个 temporal block。该表示保留了局部外观与两帧联合信息，但相邻 temporal block 之间没有显式的变化 token。RIT-Qwen3VL 在相邻 RGB block 之间增加 accumulated residual block，使视觉序列显式包含跨 block 的变化信息，并使用真实时间中点对齐模型内部时间编码和文本时间戳。
+Qwen3-VL 原始视频输入将两帧通过 Conv3D Patch Embedding 合并为一个 temporal block。该表示保留了局部外观与两帧联合信息，但相邻 temporal block 之间没有显式的变化 token。RIT-Qwen3VL 在相邻 RGB block 之间增加 accumulated residual block，使视觉序列显式包含跨 block 的变化信息，并使用真实时间中点构造对应 block 的文本时间戳。
 
 共享 Patch Embedding 的目标是避免新增一套 residual-specific patchify 网络，让 RGB 与 residual 落入同一个预训练视觉嵌入空间。冻结 ViT 则用于保留 Qwen3-VL 的预训练视觉表征；适配主要由 residual 辅助参数、Merger 和 LLM 完成。
 
@@ -65,7 +65,6 @@ flowchart LR
     RGBPATCH --> MOD["Residual 专用 LN + gate + modality embedding"]
     RGBPATCH --> INTERLEAVE["RGB / residual token 交错"]
     MOD --> INTERLEAVE
-    TIME["真实区间中点连续时间编码"] --> INTERLEAVE
     INTERLEAVE --> VIT["冻结的 Qwen3-VL ViT blocks"]
     VIT --> MERGER["可训练 Patch Merger / DeepStack Merger"]
     MERGER --> LLM["可训练 Qwen3 LLM"]
@@ -241,41 +240,9 @@ $$
 
 其中 $\gamma$ 是可学习标量，默认初始化为 $0.1$；$e_{\mathrm{res}}\in\mathbb{R}^{D_v}$ 是可学习 modality embedding。当前结构不存在额外 PixelUnshuffle、卷积 residual Patch Embedding 或 12 通道输入投影。
 
-### 5.5 真实中点连续时间编码
+### 5.5 文本时间提示
 
-对任意 block 的真实中点 $c$，构造正弦特征：
-
-$$
-\phi(c)_{2i}=\sin(c\cdot\nu_i),
-\qquad
-\phi(c)_{2i+1}=\cos(c\cdot\nu_i),
-$$
-
-$$
-\nu_i=10000^{-2i/D_t}.
-$$
-
-再映射到 ViT hidden dimension：
-
-$$
-E_t(c)=W_2\operatorname{SiLU}(W_1\phi(c)).
-$$
-
-最终 block token 为：
-
-$$
-\widehat Z_k^{\mathrm{rgb}}
-=
-Z_k^{\mathrm{rgb}}+E_t(c_k^{\mathrm{rgb}}),
-$$
-
-$$
-\widehat Z_k^{\mathrm{res}}
-=
-Z_k^{\mathrm{res}}+E_t(c_k^{\mathrm{res}}).
-$$
-
-时间特征先以 FP32 计算，再转换为时间投影层权重的 dtype，以避免 BF16 模型中的 Linear dtype 不一致；输出在加入视觉 hidden states 前再次对齐 hidden dtype。
+真实区间中点用于 Prompt 文本时间戳；不再构造正弦时间特征或时间 MLP，也不向视觉 token 叠加时间向量。保留 Qwen3-VL 原有位置编码。
 
 ### 5.6 Token 交错与视觉编码
 
@@ -285,12 +252,12 @@ $$
 \mathcal Z
 =
 \left[
-\widehat Z_0^{\mathrm{rgb}},
-\widehat Z_0^{\mathrm{res}},
-\widehat Z_1^{\mathrm{rgb}},
+Z_0^{\mathrm{rgb}},
+Z_0^{\mathrm{res}},
+Z_1^{\mathrm{rgb}},
 \ldots,
-\widehat Z_{K-2}^{\mathrm{res}},
-\widehat Z_{K-1}^{\mathrm{rgb}}
+Z_{K-2}^{\mathrm{res}},
+Z_{K-1}^{\mathrm{rgb}}
 \right].
 $$
 
@@ -365,7 +332,7 @@ $$
 | `video_grid_thw` | $[N_v,3]$ | 交错 grid，时间长度为 $2K-1$ |
 | `rgb_temporal_midpoints` | 浮点张量 | RGB block 真实中点 |
 | `residual_temporal_midpoints` | 浮点张量 | residual 区间真实中点 |
-| `temporal_midpoints` | 浮点张量 | 交错中点；时间编码与文本时间戳的统一来源 |
+| `temporal_midpoints` | 浮点张量 | 交错中点；用于构造文本时间戳，模型接收后忽略该字段 |
 
 ## 8. 参数冻结与两阶段训练
 
@@ -409,7 +376,7 @@ lora_enable = False
 
 ```mermaid
 flowchart TD
-    BASE["Qwen3-VL-2B-Instruct"] --> NEW["初始化时间编码、Residual LN、gate 与 modality embedding"]
+    BASE["Qwen3-VL-2B-Instruct"] --> NEW["初始化 Residual LN、gate 与 modality embedding"]
     NEW --> FREEZE["冻结共享 Patch Embedding 与 ViT"]
     FREEZE --> S1["Stage 1：GEB+ 边界前后状态生成"]
     S1 --> CKPT["保存完整 Stage 1 checkpoint 与 processor"]
@@ -497,7 +464,7 @@ train_scripts/run_two_stage_rit_qwen3_2b.sh
 | Residual 通道数 | 无 | 3 |
 | Patch Embedding | 原始 Conv3D | RGB 与 residual 共用同一个冻结 Conv3D |
 | 时间序列 | 仅 RGB | RGB / residual 交错 |
-| 时间编码 | 原始视觉位置机制 | 增加真实中点连续时间编码 |
+| 时间编码 | 原始视觉位置机制 | 原始位置机制与真实中点文本时间戳 |
 | 文本提示 | 普通视频 | 明确说明交错序列与 accumulated residual |
 | 总视觉预算 | RGB-only budget | RGB + residual 共用同一 budget |
 | ViT 训练 | 依 baseline 配置 | Patch Embedding 与 ViT blocks 冻结 |
@@ -508,7 +475,7 @@ train_scripts/run_two_stage_rit_qwen3_2b.sh
 
 交错后的伪时间块数从 $K$ 增加为 $2K-1$。固定总视觉 token budget 时，动态空间分辨率会相应降低，因此实际显存和吞吐需要服务器实验确认。额外开销主要来自块间帧解码、residual 构造、更多伪时间块经过 ViT 和 DeepStack，而不是新增 Patch Embedding 参数。
 
-新结构只新增连续时间 MLP、Residual LayerNorm、标量 gate 和 modality embedding；共享 Patch Embedding 不新增权重且保持冻结。
+新结构只新增Residual LayerNorm、标量 gate 和 modality embedding；共享 Patch Embedding 不新增权重且保持冻结。
 
 Config 至少保存：
 
@@ -518,8 +485,7 @@ rit_architecture_version=shared_rgb_patch_accumulate_v2
 residual_num_diffs
 residual_in_channels=3
 residual_gate_init
-time_embedding_dim
-use_true_midpoint_time_embedding
+use_true_midpoint_time_embedding=false
 combined_visual_token_budget
 minimum_tokens_per_block
 rit_sampling_fps
@@ -536,7 +502,7 @@ rit_fps_max_frames
 4. Residual gate、modality embedding、Merger 和 LLM 是否足以完成模态适配，而无需训练 ViT。
 5. GEB+ Stage 1 是否能促使模型实际利用 residual，而不是仅依赖语言先验。
 6. 固定总视觉 token budget 下，动态信息收益能否抵消空间分辨率下降。
-7. 真实区间中点连续时间编码是否优于仅使用文本时间戳或交错序号。
+7. 真实区间中点文本时间戳是否优于仅使用交错序号。
 
 ## 13. 消融实验设计
 
@@ -565,9 +531,7 @@ R2 与 R1 数学等价，实验结果原则上应一致；保留两项用于验�
 | 设置 | 内部时间编码 | 文本时间戳 | 总预算 |
 | --- | --- | --- | ---: |
 | T0 | 无 | 真实中点 | 14336 |
-| T1 | 交错序号 | 真实中点 | 14336 |
-| T2 | 真实中点 | 真实中点 | 14336 |
-| B2 | 真实中点 | 真实中点 | 8192 |
+| B2 | 无 | 真实中点 | 8192 |
 
 ## 14. 最低限度检查
 
@@ -578,10 +542,10 @@ R2 与 R1 数学等价，实验结果原则上应一致；保留两项用于验�
 3. Packed residual 宽度为 $3p^2$，而不是 $12p^2$。
 4. 模型中不存在 `residual_patch_embed`，RGB 与 residual 调用同一 `patch_embed`。
 5. Patch Embedding、ViT blocks 和视觉位置参数均 `requires_grad=False`。
-6. Merger、DeepStack Merger、时间编码、Residual LayerNorm/gate/modality embedding 和 LLM 可训练。
+6. Merger、DeepStack Merger、Residual LayerNorm/gate/modality embedding 和 LLM 可训练。
 7. 交错 feature 数与 `<|video_pad|>` 数完全一致。
-8. 时间编码和文本时间戳读取同一个 `temporal_midpoints` 张量。
-9. BF16 下连续时间编码输入与投影权重 dtype 一致。
+8. 文本时间戳根据 `temporal_midpoints` 构造，模型不将其用于视觉特征计算。
+9. 视觉 token 不再叠加连续时间编码，文本时间戳仍与区间中点一致。
 10. Stage 1 checkpoint 能无 missing key 加载到 Stage 2。
 11. 训练与评测使用完全相同的 accumulate、共享 Patch Embedding 和 Prompt 逻辑。
 

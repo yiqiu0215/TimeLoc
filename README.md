@@ -30,7 +30,7 @@ $$
 \mathcal{Z} = [Z_0^{\mathrm{rgb}}, Z_0^{\mathrm{res}}, Z_1^{\mathrm{rgb}}, \ldots, Z_{K-2}^{\mathrm{res}}, Z_{K-1}^{\mathrm{rgb}}].
 $$
 
-RGB block 和 residual block 均使用各自真实时间区间的中点进行连续时间编码；Prompt 中的文本时间戳使用相同的中点时间，保证视觉 token、连续时间位置编码和文本时间提示对齐。
+Prompt 中的文本时间戳使用 RGB block 和 residual block 各自真实时间区间的中点。视觉 token 不再叠加连续时间编码，保留 Qwen3-VL 原有位置编码。
 
 ```mermaid
 flowchart LR
@@ -44,16 +44,15 @@ flowchart LR
     A --> C["时间维复制到深度 2"]
     C --> RP
     RP --> I["RGB / residual token 交叉排列"]
-    I --> T["真实区间中点连续时间编码"]
-    T --> E["冻结的 Qwen3-VL ViT"]
-    E --> M["可训练 Merger / DeepStack / 时间适配参数"]
+    I --> E["冻结的 Qwen3-VL ViT"]
+    E --> M["可训练 Merger / DeepStack / 残差适配参数"]
     M --> L["Qwen3-VL 语言模型"]
 ```
 
 ### 参数训练策略
 
 - 冻结 Qwen3-VL ViT 主干及共享 Patch Embedding。
-- 训练视觉 Merger、DeepStack、连续时间编码相关参数和语言模型参数。
+- 训练视觉 Merger、DeepStack、残差适配参数和语言模型参数。
 - RGB 与 residual 共同占用 `total_tokens` 指定的总视觉 token budget。
 - residual token 同样参与 DeepStack 特征构建。
 - 训练和评测必须使用一致的 FPS、token budget 与 residual 配置。
@@ -182,3 +181,5 @@ TimeLoc-motion/
 ## 致谢
 
 本项目基于 Qwen3-VL、LLaMA-Factory 相关训练组件以及公开视频时序定位研究代码进行开发。感谢相关开源项目与数据集作者。
+
+连续时间编码移除后，旧 checkpoint 中的 time_position_embedding.* 权重不再使用；严格加载旧 state dict 会出现多余键。当前配置将 use_true_midpoint_time_embedding 记录为 false。该变化需要重新进行训练与评测验证。

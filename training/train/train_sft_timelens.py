@@ -73,7 +73,7 @@ def configure_vision_tower(model, training_args, compute_dtype, device):
             model.visual.deepstack_merger_list.parameters(),
             not training_args.freeze_merger,
         )
-    for module_name in ("time_position_embedding", "residual_norm"):
+    for module_name in ("residual_norm",):
         module = getattr(model.visual, module_name, None)
         if module is not None:
             set_requires_grad(module.parameters(), True)
@@ -180,8 +180,7 @@ def train():
             "residual_num_diffs": data_args.residual_num_diffs,
             "residual_in_channels": 3,
             "residual_gate_init": data_args.residual_gate_init,
-            "time_embedding_dim": data_args.time_embedding_dim,
-            "use_true_midpoint_time_embedding": True,
+            "use_true_midpoint_time_embedding": False,
             "combined_visual_token_budget": data_args.total_tokens,
             "minimum_tokens_per_block": data_args.min_tokens,
             "rit_sampling_fps": data_args.fps,
@@ -237,7 +236,6 @@ def train():
         allowed_trainable_prefixes = (
             "merger.",
             "deepstack_merger_list.",
-            "time_position_embedding.",
             "residual_norm.",
             "residual_gate",
             "residual_modality_embedding",

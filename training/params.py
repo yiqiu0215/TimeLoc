@@ -142,7 +142,6 @@ class DataArguments:
     use_residual_tokens: bool = False
     residual_num_diffs: int = 4
     residual_gate_init: float = 0.1
-    time_embedding_dim: int = 128
 
     raw_anno_path: Optional[str] = field(default=None)
     gebplus_annotation_path: str = field(

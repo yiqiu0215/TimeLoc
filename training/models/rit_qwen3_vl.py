@@ -1,4 +1,3 @@
-import math
 from typing import Optional, Union
 
 import torch
@@ -17,31 +16,6 @@ from transformers.models.qwen3_vl.modeling_qwen3_vl import (
 from transformers.utils import is_torchdynamo_compiling
 
 
-class ContinuousTimePositionEmbedding(nn.Module):
-    def __init__(self, time_embedding_dim: int, hidden_size: int):
-        super().__init__()
-        if time_embedding_dim <= 0 or time_embedding_dim % 2 != 0:
-            raise ValueError("time_embedding_dim must be a positive even integer.")
-
-        exponent = torch.arange(0, time_embedding_dim, 2, dtype=torch.float32)
-        exponent = exponent / time_embedding_dim
-        self.register_buffer(
-            "inv_freq", torch.exp(-math.log(10000.0) * exponent), persistent=False
-        )
-        self.projection = nn.Sequential(
-            nn.Linear(time_embedding_dim, time_embedding_dim),
-            nn.SiLU(),
-            nn.Linear(time_embedding_dim, hidden_size),
-        )
-
-    def forward(self, timestamps: torch.Tensor) -> torch.Tensor:
-        timestamps = timestamps.to(device=self.inv_freq.device, dtype=torch.float32)
-        angles = timestamps[:, None] * self.inv_freq[None, :]
-        features = torch.stack((angles.sin(), angles.cos()), dim=-1).flatten(1)
-        features = features.to(dtype=self.projection[0].weight.dtype)
-        return self.projection(features)
-
-
 class RITQwen3VLVisionModel(Qwen3VLVisionModel):
     def __init__(self, config, *inputs, **kwargs):
         super().__init__(config, *inputs, **kwargs)
@@ -54,10 +28,6 @@ class RITQwen3VLVisionModel(Qwen3VLVisionModel):
         )
         self.residual_modality_embedding = nn.Parameter(
             torch.zeros(config.hidden_size)
-        )
-        self.time_position_embedding = ContinuousTimePositionEmbedding(
-            time_embedding_dim=int(getattr(config, "time_embedding_dim", 128)),
-            hidden_size=config.hidden_size,
         )
 
     @staticmethod
@@ -101,7 +71,6 @@ class RITQwen3VLVisionModel(Qwen3VLVisionModel):
         residual_embeddings: torch.Tensor,
         rgb_grid_thw: torch.Tensor,
         residual_grid_thw: torch.Tensor,
-        temporal_midpoints: torch.Tensor,
     ) -> torch.Tensor:
         rgb_chunks = torch.split(rgb_embeddings, self._split_sizes(rgb_grid_thw))
         residual_chunks = torch.split(
@@ -109,7 +78,6 @@ class RITQwen3VLVisionModel(Qwen3VLVisionModel):
         )
 
         interleaved_videos = []
-        midpoint_offset = 0
         for rgb_chunk, residual_chunk, rgb_grid, residual_grid in zip(
             rgb_chunks, residual_chunks, rgb_grid_thw, residual_grid_thw
         ):
@@ -136,23 +104,7 @@ class RITQwen3VLVisionModel(Qwen3VLVisionModel):
                     blocks.append(residual_chunk[block_index])
             video_embeddings = torch.cat(blocks, dim=0)
 
-            num_midpoints = 2 * rgb_t - 1
-            current_midpoints = temporal_midpoints[
-                midpoint_offset : midpoint_offset + num_midpoints
-            ]
-            if current_midpoints.numel() != num_midpoints:
-                raise ValueError(
-                    "temporal_midpoints does not match the interleaved block count."
-                )
-            midpoint_offset += num_midpoints
-            time_embeddings = self.time_position_embedding(current_midpoints)
-            time_embeddings = time_embeddings.repeat_interleave(
-                patches_per_block, dim=0
-            ).to(video_embeddings.dtype)
-            interleaved_videos.append(video_embeddings + time_embeddings)
-
-        if midpoint_offset != temporal_midpoints.numel():
-            raise ValueError("Unused temporal midpoints remain after video interleaving.")
+            interleaved_videos.append(video_embeddings)
         return torch.cat(interleaved_videos, dim=0)
 
     def forward_interleaved(
@@ -162,7 +114,6 @@ class RITQwen3VLVisionModel(Qwen3VLVisionModel):
         rgb_video_grid_thw: torch.Tensor,
         residual_grid_thw: torch.Tensor,
         video_grid_thw: torch.Tensor,
-        temporal_midpoints: torch.Tensor,
         **kwargs,
     ):
         rgb_embeddings = self.patch_embed(pixel_values_videos)
@@ -174,7 +125,6 @@ class RITQwen3VLVisionModel(Qwen3VLVisionModel):
             residual_embeddings,
             rgb_video_grid_thw,
             residual_grid_thw,
-            temporal_midpoints,
         )
 
         expected_tokens = int(video_grid_thw.prod(dim=-1).sum().item())
@@ -232,7 +182,6 @@ class RITQwen3VLModel(Qwen3VLModel):
         rgb_video_grid_thw: torch.Tensor,
         residual_grid_thw: torch.Tensor,
         video_grid_thw: torch.Tensor,
-        temporal_midpoints: torch.Tensor,
     ):
         pixel_values_videos = pixel_values_videos.to(dtype=self.visual.dtype)
         pixel_values_residuals = pixel_values_residuals.to(dtype=self.visual.dtype)
@@ -242,7 +191,6 @@ class RITQwen3VLModel(Qwen3VLModel):
             rgb_video_grid_thw=rgb_video_grid_thw,
             residual_grid_thw=residual_grid_thw,
             video_grid_thw=video_grid_thw,
-            temporal_midpoints=temporal_midpoints,
         )
         split_sizes = (
             video_grid_thw.prod(dim=-1) // self.visual.spatial_merge_size**2
@@ -269,7 +217,7 @@ class RITQwen3VLModel(Qwen3VLModel):
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs,
     ) -> Union[tuple, Qwen3VLModelOutputWithPast]:
-        del rgb_temporal_midpoints, residual_temporal_midpoints
+        del temporal_midpoints, rgb_temporal_midpoints, residual_temporal_midpoints
         if (input_ids is None) == (inputs_embeds is None):
             raise ValueError("Specify exactly one of input_ids or inputs_embeds.")
         if inputs_embeds is None:
@@ -295,7 +243,6 @@ class RITQwen3VLModel(Qwen3VLModel):
                 "rgb_video_grid_thw": rgb_video_grid_thw,
                 "residual_grid_thw": residual_grid_thw,
                 "video_grid_thw": video_grid_thw,
-                "temporal_midpoints": temporal_midpoints,
             }
             missing = [name for name, value in required.items() if value is None]
             if missing:
@@ -307,7 +254,6 @@ class RITQwen3VLModel(Qwen3VLModel):
                     rgb_video_grid_thw,
                     residual_grid_thw,
                     video_grid_thw,
-                    temporal_midpoints,
                 )
             )
             video_embeds = torch.cat(video_embeds, dim=0).to(
@@ -424,8 +370,6 @@ class RITQwen3VLForConditionalGeneration(Qwen3VLForConditionalGeneration):
             "residual_num_diffs": 4,
             "residual_in_channels": 3,
             "residual_gate_init": 0.1,
-            "time_embedding_dim": 128,
-            "use_true_midpoint_time_embedding": True,
             "combined_visual_token_budget": 14336,
         }
         for name, value in defaults.items():
@@ -433,6 +377,10 @@ class RITQwen3VLForConditionalGeneration(Qwen3VLForConditionalGeneration):
                 setattr(config, name, value)
             if not hasattr(config.vision_config, name):
                 setattr(config.vision_config, name, getattr(config, name))
+        for target_config in (config, config.vision_config):
+            if hasattr(target_config, "time_embedding_dim"):
+                delattr(target_config, "time_embedding_dim")
+            target_config.use_true_midpoint_time_embedding = False
         config.architectures = [self.__class__.__name__]
 
         Qwen3VLPreTrainedModel.__init__(self, config)
