@@ -121,7 +121,7 @@ deepspeed training/train/train_sft_timelens.py \
   --disable_flash_attn2 False \
   --tf32 True \
   --gradient_checkpointing True \
-  --use_liger_kernel False \
+  --use_liger_kernel True \
   --deepspeed "${deepspeed_config}" \
   --model_name_or_path "${model_path}" \
   --model_id "qwen3-vl-2b-stage1" \
@@ -177,7 +177,7 @@ deepspeed training/train/train_sft_timelens.py \
   --disable_flash_attn2 False \
   --tf32 True \
   --gradient_checkpointing True \
-  --use_liger_kernel False \
+  --use_liger_kernel True \
   --deepspeed "${deepspeed_config}" \
   --model_name_or_path "${stage1_output}" \
   --processor_path "${stage1_output}" \

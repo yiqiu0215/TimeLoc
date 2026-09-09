@@ -2,7 +2,7 @@
 
 当前版本采用 Transformers 官方 Qwen3-VL 模型及 AutoProcessor，使用标准 RGB 视频输入。自定义 RIT 模型、残差差分 token、残差 gate / LayerNorm / modality embedding、交错序列和连续时间编码均已移除。官方视觉编码、Merger、DeepStack、位置编码及生成流程保持原实现。
 
-模型通过 AutoModelForImageTextToText 加载；Qwen3-VL 配置对应官方 Qwen3VLForConditionalGeneration。两阶段脚本关闭 LoRA 和 Liger 模型替换。接口依据 [Transformers 官方 Qwen3-VL 文档](https://huggingface.co/docs/transformers/model_doc/qwen3_vl)。
+模型通过 AutoModelForImageTextToText 加载；Qwen3-VL 配置对应官方 Qwen3VLForConditionalGeneration。两阶段脚本关闭 LoRA，默认开启 Liger kernel 加速。接口依据 [Transformers 官方 Qwen3-VL 文档](https://huggingface.co/docs/transformers/model_doc/qwen3_vl)。
 
 ## 两阶段策略
 
