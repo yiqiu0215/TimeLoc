@@ -1,4 +1,4 @@
-> 历史方案：本文描述已停用的区间内多差分累加方案。当前实现见 [所有相邻采样帧差分](../adjacent_sampled_frame_residuals/design.md)。
+> 历史方案：本方案已停用。当前采用官方 Qwen3-VL 标准 RGB 输入，仅保留 GEB+ → TimeLens 两阶段训练，见 ../../README.md。
 
 # Residual-Interleaved Temporal Token Qwen3-VL 方案
 

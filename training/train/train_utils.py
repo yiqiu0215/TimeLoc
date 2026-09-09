@@ -54,11 +54,11 @@ def print_trainable_parameters(model, training_args):
         if param.requires_grad:
             trainable_params_non_lora += param_count
 
-        if name.startswith('visual.merger'):
+        if name.startswith(('visual.merger', 'model.visual.merger', 'model.visual.deepstack_merger_list')):
             merger_total += param_count
             if param.requires_grad:
                 merger_trainable += param_count
-        elif name.startswith('visual.'):
+        elif name.startswith(('visual.', 'model.visual.')):
             vision_encoder_total += param_count
             if param.requires_grad:
                 vision_encoder_trainable += param_count
@@ -93,11 +93,6 @@ def verify_liger_kernel_applied(model, training_args):
     ]
     forward_module = getattr(base_model.forward, "__module__", "")
     forward_patched = forward_module.startswith("liger_kernel.")
-    if getattr(base_model.config, "use_residual_tokens", False) and forward_patched:
-        raise RuntimeError(
-            "Liger replaced the custom RIT forward. "
-            "Set fused_linear_cross_entropy=False for residual-interleaved training."
-        )
     if not patched_modules and not forward_patched:
         raise RuntimeError(
             "use_liger_kernel=True, but no Liger patch was detected after Trainer "

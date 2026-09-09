@@ -4,22 +4,13 @@ import copy
 
 from qwen_vl_utils import process_vision_info
 from torch.utils.data import Dataset
-from transformers import BatchFeature
 
-from training.data.residual_video import prepare_rit_video_inputs
 
 GROUNDER_PROMPT = (
     "Please find the visual event described by the sentence '{}', determining its starting and ending times. "
     "The format should be: 'The event happens in <start time> - <end time> seconds'."
 )
 
-RIT_GROUNDER_PROMPT = (
-    "The visual input is an interleaved sequence of RGB frame blocks and "
-    "adjacent-frame residual-motion blocks. Each RGB block contains two sampled frames "
-    "and is followed by their within-pair difference and then the difference to the next pair, when available. "
-    "Each residual is the later sampled frame minus the immediately preceding sampled frame. "
-    "The timestamp before every block is its real temporal midpoint. "
-) + GROUNDER_PROMPT
 
 # prompt for Qwen2.5-VL TimeLens models with interleaved textual timestamps
 GROUNDER_PROMPT_TEXT_TIMESTAMP = (
@@ -63,9 +54,7 @@ class GroundingDataset(Dataset):
         self._is_qwen2_timelens = _is_qwen2_timelens_model(self._format_model_path)
         self._is_qwen2 = _is_qwen2_model(self._format_model_path)
         self._is_qwen3 = _is_qwen3_model(self._format_model_path)
-        if getattr(args, "use_residual_tokens", False):
-            self.prompt = RIT_GROUNDER_PROMPT
-        elif self._is_qwen2_timelens:
+        if self._is_qwen2_timelens:
             # Qwen2.5-TimeLens uses interleaved textual timestamps.
             self.prompt = GROUNDER_PROMPT_TEXT_TIMESTAMP
         else:
@@ -112,16 +101,6 @@ class GroundingDataset(Dataset):
                 self.args.fps_max_frames
             )
 
-        if getattr(self.args, "use_residual_tokens", False):
-            inputs = prepare_rit_video_inputs(
-                self.processor,
-                messages,
-                min_tokens=self.args.min_tokens,
-                total_tokens=self.args.total_tokens,
-                add_generation_prompt=True,
-            )
-            inputs.pop("rit_text")
-            return {"inputs": BatchFeature(data=inputs), "anno": anno}
 
         text = self.processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True

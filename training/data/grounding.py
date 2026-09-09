@@ -9,20 +9,12 @@ from torch.utils.data import Dataset
 
 from timelens.dataset.timelens_data import TimeLens100KDataset, parse_query
 from training.data.preprocess import preprocess
-from training.data.residual_video import prepare_rit_video_inputs
 
 GROUNDING_PROMPT = (
     "Please find the visual event described by the sentence '{}', determining its starting and ending times. "
     "The format should be: 'The event happens in <start time> - <end time> seconds'."
 )
 
-RIT_GROUNDING_PROMPT = (
-    "The visual input is an interleaved sequence of RGB frame blocks and "
-    "adjacent-frame residual-motion blocks. Each RGB block contains two sampled frames "
-    "and is followed by their within-pair difference and then the difference to the next pair, when available. "
-    "Each residual is the later sampled frame minus the immediately preceding sampled frame. "
-    "The timestamp before every block is its real temporal midpoint. "
-) + GROUNDING_PROMPT
 
 # prompt for Qwen2.5-VL TimeLens models with interleaved textual timestamps
 GROUNDING_PROMPT_TEXT_TIMESTAMP = (
@@ -339,9 +331,7 @@ class GroundingDataset(Dataset):
     def _getitem_sft(self, idx):
         anno = copy.deepcopy(self.annos[idx])
         spans = _normalize_spans(anno["span"])
-        if self.data_args.use_residual_tokens:
-            prompt = RIT_GROUNDING_PROMPT
-        elif self._is_qwen2_timelens:
+        if self._is_qwen2_timelens:
             prompt = GROUNDING_PROMPT_TEXT_TIMESTAMP
         else:
             prompt = GROUNDING_PROMPT
@@ -358,26 +348,6 @@ class GroundingDataset(Dataset):
             }
         ]
 
-        if self.data_args.use_residual_tokens:
-            if self._is_qwen2 or self._is_qwen2_timelens:
-                raise ValueError("Residual-interleaved inputs require Qwen3-VL.")
-            response = _format_response(spans)
-            messages.append({"role": "assistant", "content": response})
-            inputs = prepare_rit_video_inputs(
-                self.processor,
-                messages,
-                min_tokens=self.data_args.min_tokens,
-                total_tokens=self.data_args.total_tokens,
-            )
-            text = inputs.pop("rit_text")
-            inputs["input_ids"] = inputs["input_ids"][0]
-            inputs["labels"] = preprocess(
-                inputs["input_ids"],
-                text,
-                self.processor.tokenizer,
-                self.model_args.conv_type,
-            )
-            return inputs
 
         if self._is_qwen2_timelens:
             images, videos = process_vision_info(

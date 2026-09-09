@@ -13,7 +13,6 @@ min_tokens=64
 total_tokens=14336
 fps_max_frames=""
 stage1_learning_rate="1e-5"
-stage1_residual_learning_rate="1e-4"
 stage2_learning_rate="1e-5"
 stage1_epochs=1
 stage2_epochs=1
@@ -23,7 +22,7 @@ batch_per_device=1
 num_devices=8
 deepspeed_config="scripts/zero3.json"
 seed=42
-output_root="output/RIT-Qwen3VL-2B"
+output_root="output/Qwen3VL-2B-TwoStage"
 report_to="none"
 
 while [[ $# -gt 0 ]]; do
@@ -37,7 +36,6 @@ while [[ $# -gt 0 ]]; do
     --total_tokens) total_tokens="$2"; shift 2 ;;
     --fps_max_frames) fps_max_frames="$2"; shift 2 ;;
     --stage1_learning_rate) stage1_learning_rate="$2"; shift 2 ;;
-    --stage1_residual_learning_rate) stage1_residual_learning_rate="$2"; shift 2 ;;
     --stage2_learning_rate) stage2_learning_rate="$2"; shift 2 ;;
     --stage1_epochs) stage1_epochs="$2"; shift 2 ;;
     --stage2_epochs) stage2_epochs="$2"; shift 2 ;;
@@ -85,10 +83,17 @@ if (( global_batch_size % (batch_per_device * num_devices) != 0 )); then
   exit 1
 fi
 
+python -c '
+import sys
+from transformers import AutoConfig
+config = AutoConfig.from_pretrained(sys.argv[1], trust_remote_code=False)
+if config.model_type != "qwen3_vl" or getattr(config, "use_residual_tokens", False):
+    raise SystemExit("Use an official Qwen3-VL model to start Stage 1.")
+' "${model_path}"
+
 gradient_accumulation_steps=$((global_batch_size / (batch_per_device * num_devices)))
 if [[ -z "${fps_max_frames}" ]]; then
-  max_pseudo_blocks=$((total_tokens / min_tokens))
-  max_rgb_blocks=$(((max_pseudo_blocks + 1) / 3))
+  max_rgb_blocks=$((total_tokens / min_tokens))
   fps_max_frames=$((max_rgb_blocks * 2))
 fi
 
@@ -116,15 +121,14 @@ deepspeed training/train/train_sft_timelens.py \
   --disable_flash_attn2 False \
   --tf32 True \
   --gradient_checkpointing True \
-  --use_liger_kernel True \
+  --use_liger_kernel False \
   --deepspeed "${deepspeed_config}" \
   --model_name_or_path "${model_path}" \
-  --model_id "rit-qwen3-vl-2b-stage1" \
+  --model_id "qwen3-vl-2b-stage1" \
   --conv_type chatml \
   --datasets gebplus \
   --gebplus_annotation_path "${gebplus_annotation_path}" \
   --gebplus_video_root "${gebplus_video_root}" \
-  --use_residual_tokens True \
   --remove_unused_columns False \
   --output_dir "${stage1_output}" \
   --min_tokens "${min_tokens}" \
@@ -140,7 +144,6 @@ deepspeed training/train/train_sft_timelens.py \
   --learning_rate "${stage1_learning_rate}" \
   --vision_lr "${stage1_learning_rate}" \
   --merger_lr "${stage1_learning_rate}" \
-  --residual_lr "${stage1_residual_learning_rate}" \
   --weight_decay 0.1 \
   --warmup_ratio 0.03 \
   --lr_scheduler_type cosine \
@@ -155,7 +158,7 @@ deepspeed training/train/train_sft_timelens.py \
   --dataloader_num_workers 4 \
   --seed "${seed}" \
   --report_to "${report_to}" \
-  --run_name "rit-qwen3-vl-2b/stage1-${run_tag}"
+  --run_name "qwen3-vl-2b/stage1-${run_tag}"
 
 if [[ ! -f "${stage1_output}/config.json" ]]; then
   echo "Stage 1 did not produce config.json; Stage 2 will not start."
@@ -174,16 +177,15 @@ deepspeed training/train/train_sft_timelens.py \
   --disable_flash_attn2 False \
   --tf32 True \
   --gradient_checkpointing True \
-  --use_liger_kernel True \
+  --use_liger_kernel False \
   --deepspeed "${deepspeed_config}" \
   --model_name_or_path "${stage1_output}" \
   --processor_path "${stage1_output}" \
-  --model_id "rit-qwen3-vl-2b-stage2" \
+  --model_id "qwen3-vl-2b-stage2" \
   --conv_type chatml \
   --datasets gemini_refined_data \
   --timelens_data_root "${timelens_data_root}" \
   --target_size "${target_size}" \
-  --use_residual_tokens True \
   --remove_unused_columns False \
   --output_dir "${stage2_output}" \
   --min_tokens "${min_tokens}" \
@@ -200,7 +202,6 @@ deepspeed training/train/train_sft_timelens.py \
   --learning_rate "${stage2_learning_rate}" \
   --vision_lr "${stage2_learning_rate}" \
   --merger_lr "${stage2_learning_rate}" \
-  --residual_lr "${stage2_learning_rate}" \
   --weight_decay 0.1 \
   --warmup_ratio 0.03 \
   --lr_scheduler_type cosine \
@@ -215,6 +216,6 @@ deepspeed training/train/train_sft_timelens.py \
   --dataloader_num_workers 4 \
   --seed "${seed}" \
   --report_to "${report_to}" \
-  --run_name "rit-qwen3-vl-2b/stage2-${target_label}-${run_tag}"
+  --run_name "qwen3-vl-2b/stage2-${target_label}-${run_tag}"
 
-echo "Two-stage RIT training completed: ${stage2_output}"
+echo "Two-stage Qwen3-VL training completed: ${stage2_output}"

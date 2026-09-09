@@ -72,42 +72,42 @@ if (( global_batch_size % (batch_per_device * num_devices) != 0 )); then
   exit 1
 fi
 
-rit_values="$(python -c '
+preprocessing_values="$(python -c '
 import json
 import sys
 
 with open(sys.argv[1], "r", encoding="utf-8") as file:
     config = json.load(file)
 
-expected_version = "shared_rgb_patch_adjacent_v3"
-version = config.get("rit_architecture_version")
-if version != expected_version:
-    raise SystemExit(
-        f"Incompatible RIT architecture: {version!r}; expected {expected_version!r}."
-    )
+if config.get("model_type") != "qwen3_vl" or config.get("use_residual_tokens", False):
+    raise SystemExit("Stage 2 requires an official Qwen3-VL Stage 1 checkpoint.")
+
+from pathlib import Path
+preprocessing_path = Path(sys.argv[1]).with_name("video_preprocessing.json")
+with preprocessing_path.open("r", encoding="utf-8") as file:
+    preprocessing = json.load(file)
 
 keys = (
-    "minimum_tokens_per_block",
-    "combined_visual_token_budget",
-    "rit_sampling_fps",
-    "rit_fps_max_frames",
+    "min_tokens",
+    "total_tokens",
+    "fps",
+    "fps_max_frames",
 )
-missing = [key for key in keys if key not in config]
+missing = [key for key in keys if key not in preprocessing]
 if missing:
-    raise SystemExit("Missing Stage 1 RIT config fields: " + ", ".join(missing))
+    raise SystemExit("Missing Stage 1 preprocessing fields: " + ", ".join(missing))
 
-print("|".join(str(config[key]) for key in keys))
+print("|".join(str(preprocessing[key]) for key in keys))
 ' "${stage1_model_path}/config.json")"
 
 IFS='|' read -r \
   min_tokens \
   total_tokens \
   fps \
-  fps_max_frames <<< "${rit_values}"
+  fps_max_frames <<< "${preprocessing_values}"
 
 if [[ "${fps_max_frames}" == "None" ]]; then
-  max_pseudo_blocks=$((total_tokens / min_tokens))
-  max_rgb_blocks=$(((max_pseudo_blocks + 1) / 3))
+  max_rgb_blocks=$((total_tokens / min_tokens))
   fps_max_frames=$((max_rgb_blocks * 2))
 fi
 
@@ -141,16 +141,15 @@ deepspeed training/train/train_sft_timelens.py \
   --disable_flash_attn2 False \
   --tf32 True \
   --gradient_checkpointing True \
-  --use_liger_kernel True \
+  --use_liger_kernel False \
   --deepspeed "${deepspeed_config}" \
   --model_name_or_path "${stage1_model_path}" \
   --processor_path "${stage1_model_path}" \
-  --model_id "rit-qwen3-vl-2b-stage2-${target_size}" \
+  --model_id "qwen3-vl-2b-stage2-${target_size}" \
   --conv_type chatml \
   --datasets gemini_refined_data \
   --timelens_data_root "${timelens_data_root}" \
   --target_size "${target_size}" \
-  --use_residual_tokens True \
   --remove_unused_columns False \
   --output_dir "${output_dir}" \
   --min_tokens "${min_tokens}" \
@@ -167,7 +166,6 @@ deepspeed training/train/train_sft_timelens.py \
   --learning_rate "${learning_rate}" \
   --vision_lr "${learning_rate}" \
   --merger_lr "${learning_rate}" \
-  --residual_lr "${learning_rate}" \
   --weight_decay 0.1 \
   --warmup_ratio 0.03 \
   --lr_scheduler_type cosine \
@@ -182,6 +180,6 @@ deepspeed training/train/train_sft_timelens.py \
   --dataloader_num_workers 4 \
   --seed "${seed}" \
   --report_to "${report_to}" \
-  --run_name "rit-qwen3-vl-2b/stage2-${target_size}"
+  --run_name "qwen3-vl-2b/stage2-${target_size}"
 
-echo "Stage 2 RIT training completed: ${output_dir}"
+echo "Stage 2 Qwen3-VL training completed: ${output_dir}"

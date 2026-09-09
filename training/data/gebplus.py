@@ -7,7 +7,6 @@ from qwen_vl_utils import process_vision_info
 from torch.utils.data import Dataset
 
 from training.data.preprocess import preprocess
-from training.data.residual_video import prepare_rit_video_inputs
 
 
 BOUNDARY_STATUS_PROMPT = (
@@ -19,13 +18,6 @@ BOUNDARY_STATUS_PROMPT = (
     "Status_After: <status immediately after the boundary>"
 )
 
-RIT_VISUAL_SEQUENCE_PROMPT = (
-    "The visual input is an interleaved sequence of RGB frame blocks and "
-    "adjacent-frame residual-motion blocks. Each RGB block contains two sampled frames "
-    "and is followed by their within-pair difference and then the difference to the next pair, when available. "
-    "Each residual is the later sampled frame minus the immediately preceding sampled frame. "
-    "The timestamp before every block is its real temporal midpoint. "
-)
 
 
 def _format_timestamp(timestamp: float) -> str:
@@ -155,8 +147,6 @@ class GEBPlusDataset(Dataset):
             timestamp=_format_timestamp(anno["timestamp"]),
             subject=anno["subject"],
         )
-        if self.data_args.use_residual_tokens:
-            prompt = RIT_VISUAL_SEQUENCE_PROMPT + prompt
         messages = [
             {
                 "role": "user",
@@ -173,22 +163,6 @@ class GEBPlusDataset(Dataset):
             },
         ]
 
-        if self.data_args.use_residual_tokens:
-            inputs = prepare_rit_video_inputs(
-                self.processor,
-                messages,
-                min_tokens=self.data_args.min_tokens,
-                total_tokens=self.data_args.total_tokens,
-            )
-            text = inputs.pop("rit_text")
-            inputs["input_ids"] = inputs["input_ids"][0]
-            inputs["labels"] = preprocess(
-                inputs["input_ids"],
-                text,
-                self.processor.tokenizer,
-                self.model_args.conv_type,
-            )
-            return inputs
 
         images, videos, video_kwargs = process_vision_info(
             messages,

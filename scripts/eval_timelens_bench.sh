@@ -25,13 +25,17 @@ echo -e "\e[1;36mEvaluating datasets:\e[0m ${datasets[*]}"
 
 #---------------------------- Model Path ----------------------------#
 # Use model path from environment variable or default
-model_path=${model_path:-"TencentARC/TimeLens-8B"}
+model_path=${model_path:-"Qwen/Qwen3-VL-2B-Instruct"}
 processor_path=${processor_path:-""}
 
 #---------------------------- Configuration ----------------------------#
-min_tokens=${min_tokens:-64}
-total_tokens=${total_tokens:-14336}
-FPS=${FPS:-2}
+preprocessing_args=()
+[[ -n "${min_tokens:-}" ]] && preprocessing_args+=(--min_tokens "$min_tokens")
+[[ -n "${total_tokens:-}" ]] && preprocessing_args+=(--total_tokens "$total_tokens")
+[[ -n "${FPS:-}" ]] && preprocessing_args+=(--fps "$FPS")
+if [[ -n "${fps_max_frames:-}" ]]; then
+    preprocessing_args+=(--fps_max_frames "$fps_max_frames")
+fi
 
 # ----------------- Save Path -----------------#
 # Prediction Save Path with default or env variable
@@ -66,9 +70,7 @@ for dataset in "${datasets[@]}"; do
             --pred_path $current_pred_path \
             --model_path $model_path \
             --processor_path "$processor_path" \
-            --min_tokens $min_tokens \
-            --total_tokens $total_tokens \
-            --fps $FPS \
+            "${preprocessing_args[@]}" \
             --chunk $CHUNKS \
             --index $IDX &
     done

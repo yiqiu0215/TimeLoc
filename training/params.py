@@ -54,7 +54,6 @@ class TrainingArguments(HFTrainingArguments):
     lora_bias: str = "none"
     vision_lr: Optional[float] = None
     merger_lr: Optional[float] = None
-    residual_lr: Optional[float] = None
     lora_namespan_exclude: Optional[str] = field(
         default=None,
         metadata={"help": "List of namespan to exclude for LoRA"},
@@ -139,8 +138,6 @@ class DataArguments:
     fps: float = 2.0
     fps_max_frames: Optional[int] = None
 
-    use_residual_tokens: bool = False
-    residual_gate_init: float = 0.1
 
     raw_anno_path: Optional[str] = field(default=None)
     gebplus_annotation_path: str = field(

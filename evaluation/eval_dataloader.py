@@ -2,6 +2,8 @@
 # Original code copyright (c) 2025 Ye Liu. Licensed under the BSD-3-Clause License.
 
 import argparse
+import json
+from pathlib import Path
 import os
 
 import nncore
@@ -29,7 +31,6 @@ def parse_args():
     parser.add_argument("--total_tokens", type=int, default=None)
     parser.add_argument("--fps", type=float, default=None)
     parser.add_argument("--fps_max_frames", type=int, default=None)
-    parser.add_argument("--use_residual_tokens", action="store_true")
 
     parser.add_argument("--dataset", required=True, help="Dataset name")
     parser.add_argument("--split", default="test")
@@ -68,31 +69,20 @@ if __name__ == "__main__":
         'Device should be set to "auto" for multi-GPU evaluation.'
     )
 
-    config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
-    args.use_residual_tokens = args.use_residual_tokens or bool(
-        getattr(config, "use_residual_tokens", False)
-    )
-    if args.use_residual_tokens:
-        if args.min_tokens is None:
-            args.min_tokens = int(getattr(config, "minimum_tokens_per_block", 64))
-        if args.total_tokens is None:
-            args.total_tokens = int(
-                getattr(config, "combined_visual_token_budget", 14336)
-            )
-        if args.fps is None:
-            args.fps = float(getattr(config, "rit_sampling_fps", 1.0))
-        if args.fps_max_frames is None:
-            args.fps_max_frames = getattr(config, "rit_fps_max_frames", None)
-        if args.fps_max_frames is None:
-            max_pseudo_blocks = args.total_tokens // args.min_tokens
-            args.fps_max_frames = ((max_pseudo_blocks + 1) // 3) * 2
-    else:
-        args.min_tokens = 16 if args.min_tokens is None else args.min_tokens
-        args.total_tokens = 3584 if args.total_tokens is None else args.total_tokens
-        args.fps = 2.0 if args.fps is None else args.fps
-    model_cls = get_model_class(
-        args.model_path, use_residual_tokens=args.use_residual_tokens
-    )
+    config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=False)
+    if getattr(config, "use_residual_tokens", False):
+        raise ValueError("Use an official Qwen3-VL checkpoint, not a retired RIT checkpoint.")
+    preprocessing_path = Path(args.model_path) / "video_preprocessing.json"
+    preprocessing = {}
+    if preprocessing_path.is_file():
+        preprocessing = json.loads(preprocessing_path.read_text(encoding="utf-8"))
+    for name, default in (
+        ("min_tokens", 16), ("total_tokens", 3584), ("fps", 2.0),
+        ("fps_max_frames", None),
+    ):
+        if getattr(args, name) is None:
+            setattr(args, name, preprocessing.get(name, default))
+    model_cls = get_model_class(args.model_path)
     model = model_cls.from_pretrained(
         args.model_path,
         config=config,
@@ -103,14 +93,16 @@ if __name__ == "__main__":
 
     processor_source = args.processor_path or args.model_path
     args.processor_path = processor_source
-    args.format_model_path = processor_source
+    args.format_model_path = (
+        "qwen3-vl" if config.model_type == "qwen3_vl" else processor_source
+    )
 
     # Load processor (model-specific)
     processor = AutoProcessor.from_pretrained(
         processor_source,
         padding_side="left",
         do_resize=False,  # For Video Processing, we do not need to resize the video frames again in the processor
-        trust_remote_code=True,
+        trust_remote_code=False,
     )
     # Load dataset
     dataset_class = DATASET_DICT[args.dataset]

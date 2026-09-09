@@ -3,6 +3,7 @@ SFT training script for TimeLens-8B.
 Adapted from Qwen2-VL-Finetune/VideoMind train_sft_videomind.py.
 """
 import ast
+import json
 import os
 import pathlib
 import sys
@@ -60,34 +61,26 @@ def set_requires_grad(parameters, requires_grad):
 
 
 def configure_vision_tower(model, training_args, compute_dtype, device):
-    vision_tower = model.visual
+    vision_tower = model.model.visual
     vision_tower.to(dtype=compute_dtype, device=device)
 
-    vision_model_params = model.visual.parameters()
+    vision_model_params = model.model.visual.parameters()
     set_requires_grad(vision_model_params, not training_args.freeze_vision_tower)
 
-    merger_params = model.visual.merger.parameters()
+    merger_params = model.model.visual.merger.parameters()
     set_requires_grad(merger_params, not training_args.freeze_merger)
-    if hasattr(model.visual, "deepstack_merger_list"):
+    if hasattr(model.model.visual, "deepstack_merger_list"):
         set_requires_grad(
-            model.visual.deepstack_merger_list.parameters(),
+            model.model.visual.deepstack_merger_list.parameters(),
             not training_args.freeze_merger,
         )
-    for module_name in ("residual_norm",):
-        module = getattr(model.visual, module_name, None)
-        if module is not None:
-            set_requires_grad(module.parameters(), True)
-    for parameter_name in ("residual_gate", "residual_modality_embedding"):
-        parameter = getattr(model.visual, parameter_name, None)
-        if parameter is not None:
-            parameter.requires_grad = True
 
 
 def configure_llm(model, training_args):
     lm_head = model.lm_head.parameters()
     set_requires_grad(lm_head, not training_args.freeze_llm)
 
-    llm_params = model.model.parameters()
+    llm_params = model.model.language_model.parameters()
     set_requires_grad(llm_params, not training_args.freeze_llm)
 
 
@@ -97,20 +90,6 @@ def train():
     parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
-    if data_args.use_residual_tokens:
-        if training_args.lora_enable:
-            raise ValueError("RIT two-stage training requires direct parameter training, not LoRA.")
-        if not training_args.freeze_vision_tower:
-            raise ValueError("RIT shared-patch training requires freeze_vision_tower=True.")
-        if training_args.freeze_llm or training_args.freeze_merger:
-            raise ValueError("RIT requires the LLM and visual mergers to remain trainable.")
-        if training_args.use_liger_kernel:
-            liger_config = dict(training_args.liger_kernel_config or {})
-            liger_config.setdefault("rope", True)
-            liger_config.setdefault("rms_norm", True)
-            liger_config.setdefault("cross_entropy", True)
-            liger_config["fused_linear_cross_entropy"] = False
-            training_args.liger_kernel_config = liger_config
 
     if training_args.lora_enable and not training_args.freeze_llm:
         raise ValueError("If `lora_enable` is True, `freeze_llm` must also be True.")
@@ -158,56 +137,17 @@ def train():
             )
         )
 
-    model_cls = get_model_class(
-        model_args.model_name_or_path,
-        use_residual_tokens=data_args.use_residual_tokens,
-    )
+    model_cls = get_model_class(model_args.model_name_or_path)
     processor_source = model_args.processor_path or model_args.model_name_or_path
     processor_cls = get_processor_class(processor_source)
     config_cls = get_config_class(model_args.model_name_or_path)
 
     config = config_cls.from_pretrained(
-        model_args.model_name_or_path, trust_remote_code=True
+        model_args.model_name_or_path, trust_remote_code=False
     )
-    if data_args.use_residual_tokens:
-        if config.model_type != "qwen3_vl":
-            raise ValueError(
-                f"RIT requires a Qwen3-VL checkpoint, got model_type={config.model_type}."
-            )
-        residual_config = {
-            "use_residual_tokens": True,
-            "rit_architecture_version": "shared_rgb_patch_adjacent_v3",
-            "residual_in_channels": 3,
-            "residual_gate_init": data_args.residual_gate_init,
-            "use_true_midpoint_time_embedding": False,
-            "combined_visual_token_budget": data_args.total_tokens,
-            "minimum_tokens_per_block": data_args.min_tokens,
-            "rit_sampling_fps": data_args.fps,
-            "rit_fps_max_frames": data_args.fps_max_frames,
-        }
-        if getattr(config, "use_residual_tokens", False):
-            if getattr(config, "rit_architecture_version", None) != "shared_rgb_patch_adjacent_v3":
-                raise ValueError(
-                    "The checkpoint uses a different residual sequence "
-                    "and is incompatible with shared_rgb_patch_adjacent_v3."
-                )
-            mismatched = {
-                name: (getattr(config, name), value)
-                for name, value in residual_config.items()
-                if hasattr(config, name) and getattr(config, name) != value
-            }
-            if mismatched:
-                details = ", ".join(
-                    f"{name}: checkpoint={saved}, requested={requested}"
-                    for name, (saved, requested) in mismatched.items()
-                )
-                raise ValueError(
-                    "RIT checkpoint structure/config must remain unchanged between stages: "
-                    + details
-                )
-        for name, value in residual_config.items():
-            setattr(config, name, value)
-            setattr(config.vision_config, name, value)
+
+    if getattr(config, "use_residual_tokens", False):
+        raise ValueError("Use an official Qwen3-VL checkpoint, not a retired RIT checkpoint.")
 
     model = model_cls.from_pretrained(
         model_args.model_name_or_path,
@@ -216,7 +156,7 @@ def train():
         attn_implementation="flash_attention_2"
         if not training_args.disable_flash_attn2
         else "sdpa",
-        trust_remote_code=True,
+        trust_remote_code=False,
         **bnb_model_from_pretrained_args,
     )
 
@@ -226,29 +166,6 @@ def train():
     configure_vision_tower(
         model_to_configure, training_args, compute_dtype, training_args.device
     )
-    if data_args.use_residual_tokens:
-        trainable_visual_names = {
-            name
-            for name, parameter in model.visual.named_parameters()
-            if parameter.requires_grad
-        }
-        allowed_trainable_prefixes = (
-            "merger.",
-            "deepstack_merger_list.",
-            "residual_norm.",
-            "residual_gate",
-            "residual_modality_embedding",
-        )
-        unexpected = sorted(
-            name
-            for name in trainable_visual_names
-            if not name.startswith(allowed_trainable_prefixes)
-        )
-        if unexpected:
-            raise RuntimeError(
-                "Frozen ViT has unexpected trainable parameters: "
-                + ", ".join(unexpected[:10])
-            )
 
     if training_args.bits in [4, 8]:
         model.config.torch_dtype = (
@@ -306,7 +223,7 @@ def train():
     # `do_resize=False` at the processor call sites instead of persisting it
     # into the saved processor defaults.
     processor = processor_cls.from_pretrained(
-        processor_source, trust_remote_code=True
+        processor_source, trust_remote_code=False
     )
 
     if training_args.bits in [4, 8]:
@@ -369,6 +286,17 @@ def train():
 
     if local_rank == 0 or local_rank == -1:
         processor.save_pretrained(training_args.output_dir)
+        with open(
+            os.path.join(training_args.output_dir, "video_preprocessing.json"),
+            "w", encoding="utf-8",
+        ) as file:
+            json.dump(
+                {name: getattr(data_args, name) for name in (
+                    "min_tokens", "total_tokens", "fps", "fps_max_frames"
+                )},
+                file, indent=2,
+            )
+
 
         if not training_args.keep_intermediate_checkpoints:
             import shutil

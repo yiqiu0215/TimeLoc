@@ -24,11 +24,7 @@ def _validate_model_path(model_path: str) -> None:
         )
 
 
-def get_model_class(model_path: str, use_residual_tokens: bool = False):
-    if use_residual_tokens:
-        from training.models import RITQwen3VLForConditionalGeneration
-
-        return RITQwen3VLForConditionalGeneration
+def get_model_class(model_path: str):
     _validate_model_path(model_path)
     return AutoModelForImageTextToText
 
