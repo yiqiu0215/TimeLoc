@@ -9,6 +9,9 @@ __pycache__
 .DS_Store
 ._*
 /logs
+/train_logs
+*.log
+=3.7.0
 /output
 /tensorboard
 /wandb

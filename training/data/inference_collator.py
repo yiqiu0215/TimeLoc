@@ -10,15 +10,18 @@ GROUNDING_PROMPT = (
     "The format should be: 'The event happens in <start time> - <end time> seconds'."
 )
 
-# prompt for TimeLens-7B (Qwen2.5-VL) with interleaved textual timestamps
+# prompt for Qwen2.5-VL TimeLens models with interleaved textual timestamps
 GROUNDING_PROMPT_TEXT_TIMESTAMP = (
     "You are given a video with multiple frames. "
     "The numbers before each video frame indicate its sampling timestamp (in seconds). "
 ) + GROUNDING_PROMPT
 
 
-def _is_timelens_7b_model(model_name: str) -> bool:
-    return bool(model_name) and "timelens-7b" in model_name.lower()
+def _is_qwen2_timelens_model(model_name: str) -> bool:
+    if not model_name:
+        return False
+    m = model_name.lower()
+    return "timelens-3b" in m or "timelens-7b" in m
 
 
 def _is_qwen2_model(model_name: str) -> bool:
@@ -37,13 +40,13 @@ def collate_fn(batch, processor, model_name="qwen3-vl"):
         add_generation_prompt=True,
     )
 
-    if _is_timelens_7b_model(model_name):
-        # TimeLens-7B: interleave timestamp with textual frame timestamps
+    if _is_qwen2_timelens_model(model_name):
+        # Qwen2.5-TimeLens: interleave timestamp with textual frame timestamps
         images, videos = process_vision_info(messages, return_video_metadata=True)
         if videos is None or len(videos) == 0:
             raise ValueError(
-                "Empty videos for TimeLens-7B strict path. "
-                "Please ensure TimeLens-7B processor/config and qwen_vl_utils are aligned."
+                "Empty videos for Qwen2.5-TimeLens strict path. "
+                "Please ensure processor/config and qwen_vl_utils are aligned."
             )
         inputs = processor(
             text=texts,
@@ -108,15 +111,15 @@ class GroundingDatasetInference(Dataset):
             or getattr(args, "model_path", "")
             or ""
         )
-        self._is_timelens_7b = _is_timelens_7b_model(model_path)
+        self._is_qwen2_timelens = _is_qwen2_timelens_model(model_path)
         self._is_qwen2 = _is_qwen2_model(model_path)
         self._prompt = (
             GROUNDING_PROMPT_TEXT_TIMESTAMP
-            if self._is_timelens_7b
+            if self._is_qwen2_timelens
             else GROUNDING_PROMPT
         )
         self._pixel_scale = (
-            28 * 28 if (self._is_timelens_7b or self._is_qwen2) else 32 * 32
+            28 * 28 if (self._is_qwen2_timelens or self._is_qwen2) else 32 * 32
         )
 
     def __len__(self):

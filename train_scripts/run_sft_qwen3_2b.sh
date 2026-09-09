@@ -3,31 +3,28 @@
 set -euo pipefail
 
 export PYTHONPATH="./:${PYTHONPATH:-}"
-export CUDA_LAUNCH_BLOCKING=1
 
-model_path=""
-raw_anno_path=""
-datasets="filtered_hybrid"
-model_id="qwen3-vl-8b"
+model_path="/path/to/Qwen3-VL-2B-Instruct"
+datasets="gemini_refined_data"
+model_id="timelens-2b"
 min_tokens=64
 total_tokens=14336
 fps=2
 fps_max_frames=""
 seed=42
 
-global_batch_size=64
+global_batch_size=128
 batch_per_device=1
 num_devices=8
 epochs=1
-target_size=2500
-deepspeed_config="scripts/zero1.json"
-output_root="output/TimeLens-8B/grpo"
+target_size=30000
+deepspeed_config="scripts/zero3.json"
+output_root="output/TimeLens-2B/sft"
 report_to="none"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model_path) model_path="$2"; shift 2 ;;
-    --raw_anno_path) raw_anno_path="$2"; shift 2 ;;
     --datasets) datasets="$2"; shift 2 ;;
     --min_tokens) min_tokens="$2"; shift 2 ;;
     --total_tokens) total_tokens="$2"; shift 2 ;;
@@ -49,75 +46,56 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "${model_path}" ]]; then
-  echo "--model_path is required (use the SFT checkpoint path)."
-  exit 1
-fi
-
-if [[ -z "${raw_anno_path}" ]]; then
-  echo "--raw_anno_path is required (use filtering output jsonl path)."
-  exit 1
-fi
-
 grad_accum_steps=$((global_batch_size / (batch_per_device * num_devices)))
 if [[ -z "${fps_max_frames}" ]]; then
   fps_max_frames=$((total_tokens / min_tokens * 2))
 fi
 run_tag="$(date +%Y%m%d-%H%M)"
-run_name="grpo-${run_tag}_MAXFRAMES-${fps_max_frames}_FPS-${fps}_TOTALtokens-${total_tokens}_MINtokens-${min_tokens}"
+run_name="sft-${run_tag}_MAXFRAMES-${fps_max_frames}_FPS-${fps}_TOTALtokens-${total_tokens}_MINtokens-${min_tokens}"
 output_dir="${output_root}/${run_name}"
 
 mkdir -p "${output_dir}"
 echo "Output directory: ${output_dir}"
 
-deepspeed training/train/train_grpo_timelens.py \
+deepspeed training/train/train_sft_timelens.py \
   --bf16 True \
   --fp16 False \
   --disable_flash_attn2 False \
   --tf32 True \
   --gradient_checkpointing True \
+  --use_liger_kernel True \
   --deepspeed "${deepspeed_config}" \
   --model_name_or_path "${model_path}" \
   --model_id "${model_id}" \
+  --conv_type "chatml" \
   --datasets "${datasets}" \
-  --raw_anno_path "${raw_anno_path}" \
-  --fixed_gaussian_sampling True \
-  --gaussian_filter_mean 0.05 \
-  --gaussian_filter_std 0.2 \
-  --target_size "${target_size}" \
   --remove_unused_columns False \
   --output_dir "${output_dir}" \
   --min_tokens "${min_tokens}" \
   --total_tokens "${total_tokens}" \
   --fps "${fps}" \
   --fps_max_frames "${fps_max_frames}" \
+  --target_size "${target_size}" \
   --min_video_len 5 \
   --max_video_len 500 \
   --max_num_words 200 \
   --freeze_vision_tower True \
   --freeze_llm False \
   --freeze_merger False \
-  --lr_scheduler_type constant \
-  --learning_rate 1e-6 \
+  --learning_rate 1e-5 \
+  --merger_lr 1e-5 \
+  --weight_decay 0.1 \
+  --warmup_ratio 0.03 \
+  --lr_scheduler_type cosine \
   --num_train_epochs "${epochs}" \
   --per_device_train_batch_size "${batch_per_device}" \
   --gradient_accumulation_steps "${grad_accum_steps}" \
   --logging_steps 1 \
-  --save_strategy steps \
-  --save_steps 100 \
-  --save_total_limit 5 \
+  --save_strategy epoch \
+  --save_total_limit "${epochs}" \
   --dataloader_num_workers 4 \
-  --log_completions True \
-  --use_liger_kernel False \
-  --use_liger_loss False \
-  --reward_funcs tiou \
-  --num_generations 8 \
-  --steps_per_generation 1 \
-  --temperature 1.0 \
-  --scale_rewards False \
   --seed "${seed}" \
   --report_to "${report_to}" \
-  --run_name "${model_id}-grpo/${run_name}" \
+  --run_name "${model_id}-sft/${run_name}" \
   --logging_dir wandb \
-  --save_only_model True \
-  --max_steps 100
+  --save_only_model True

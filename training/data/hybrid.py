@@ -2,6 +2,7 @@ from itertools import accumulate
 
 from torch.utils.data import Dataset
 
+from training.data.gebplus import GEBPlusDataset
 from training.data.grounding import GroundingDataset
 
 
@@ -33,7 +34,19 @@ class HybridDataset(Dataset):
         dataset_names = [name.strip() for name in data_args.datasets.split(",") if name.strip()]
         datasets = []
         for name in dataset_names:
-            if name in ("gemini_refined_data", "timelens-100k"):
+            if name == "gebplus":
+                if training_mode != "sft":
+                    raise ValueError("GEB+ boundary-status data currently supports SFT only.")
+                datasets.append(
+                    GEBPlusDataset(
+                        processor=processor,
+                        model_args=model_args,
+                        data_args=data_args,
+                        training_args=training_args,
+                    )
+                )
+                continue
+            elif name in ("gemini_refined_data", "timelens-100k"):
                 filter_args = _build_default_filter_args(data_args.target_size)
                 dataset_name = name
             elif name == "filtered_hybrid":
@@ -42,7 +55,8 @@ class HybridDataset(Dataset):
             else:
                 raise ValueError(
                     f"Unsupported dataset name: {name}. "
-                    "Supported: gemini_refined_data, timelens-100k, filtered_hybrid."
+                    "Supported: gebplus, gemini_refined_data, timelens-100k, "
+                    "filtered_hybrid."
                 )
 
             datasets.append(

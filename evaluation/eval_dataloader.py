@@ -8,20 +8,28 @@ import nncore
 import torch
 from nncore.engine import set_random_seed
 from torch.utils.data import DataLoader
-from transformers import AutoModelForImageTextToText, AutoProcessor
+from transformers import AutoConfig, AutoProcessor
 
 from evaluation.utils import GroundingDataset
 from timelens.dataset.timelens_data import DATASET_DICT
 from timelens.utils import extract_time
+from training.model_loader import get_model_class
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pred_path", required=True, help="Output prediction path")
     parser.add_argument("--model_path", required=True, help="Path to the model")
-    parser.add_argument("--min_tokens", type=int, default=16)
-    parser.add_argument("--total_tokens", type=int, default=3584)
-    parser.add_argument("--fps", type=int, default=2)
+    parser.add_argument(
+        "--processor_path",
+        default=None,
+        help="Processor checkpoint path. For TimeLens-3B, set to TencentARC/TimeLens-7B.",
+    )
+    parser.add_argument("--min_tokens", type=int, default=None)
+    parser.add_argument("--total_tokens", type=int, default=None)
+    parser.add_argument("--fps", type=float, default=None)
+    parser.add_argument("--fps_max_frames", type=int, default=None)
+    parser.add_argument("--use_residual_tokens", action="store_true")
 
     parser.add_argument("--dataset", required=True, help="Dataset name")
     parser.add_argument("--split", default="test")
@@ -60,17 +68,46 @@ if __name__ == "__main__":
         'Device should be set to "auto" for multi-GPU evaluation.'
     )
 
-    # Load model
-    model = AutoModelForImageTextToText.from_pretrained(
+    config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
+    args.use_residual_tokens = args.use_residual_tokens or bool(
+        getattr(config, "use_residual_tokens", False)
+    )
+    if args.use_residual_tokens:
+        if args.min_tokens is None:
+            args.min_tokens = int(getattr(config, "minimum_tokens_per_block", 64))
+        if args.total_tokens is None:
+            args.total_tokens = int(
+                getattr(config, "combined_visual_token_budget", 14336)
+            )
+        if args.fps is None:
+            args.fps = float(getattr(config, "rit_sampling_fps", 1.0))
+        if args.fps_max_frames is None:
+            args.fps_max_frames = getattr(config, "rit_fps_max_frames", None)
+        if args.fps_max_frames is None:
+            max_pseudo_blocks = args.total_tokens // args.min_tokens
+            args.fps_max_frames = ((max_pseudo_blocks + 1) // 3) * 2
+    else:
+        args.min_tokens = 16 if args.min_tokens is None else args.min_tokens
+        args.total_tokens = 3584 if args.total_tokens is None else args.total_tokens
+        args.fps = 2.0 if args.fps is None else args.fps
+    model_cls = get_model_class(
+        args.model_path, use_residual_tokens=args.use_residual_tokens
+    )
+    model = model_cls.from_pretrained(
         args.model_path,
+        config=config,
         dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
         device_map=args.device,
     ).eval()
 
+    processor_source = args.processor_path or args.model_path
+    args.processor_path = processor_source
+    args.format_model_path = processor_source
+
     # Load processor (model-specific)
     processor = AutoProcessor.from_pretrained(
-        args.model_path,
+        processor_source,
         padding_side="left",
         do_resize=False,  # For Video Processing, we do not need to resize the video frames again in the processor
         trust_remote_code=True,
@@ -90,7 +127,7 @@ if __name__ == "__main__":
         dataset,
         batch_size=1,
         shuffle=False,
-        num_workers=10,
+        num_workers=4,
         prefetch_factor=2,
         pin_memory=True,
         collate_fn=lambda x: x[0],

@@ -3,6 +3,7 @@
 import json
 import os
 import re
+from pathlib import Path
 
 
 def parse_query(query):
@@ -11,8 +12,8 @@ def parse_query(query):
 
 
 class ActivitynetTimeLensDataset:
-    ANNO_PATH_TEST = "/root/autodl-tmp/datasets/TimeLens-Bench/activitynet-timelens.json"
-    VIDEO_ROOT = "/root/autodl-tmp/datasets/TimeLens-Bench/videos/activitynet"
+    ANNO_PATH_TEST = "/workspace/s/lzw/datasets/TimeLens-Bench/activitynet-timelens.json"
+    VIDEO_ROOT = "/workspace/s/lzw/datasets/TimeLens-Bench/videos/activitynet"
     DATASET_SOURCE = "ActivityNet-TimeLens"
 
     @classmethod
@@ -43,33 +44,48 @@ class ActivitynetTimeLensDataset:
 
 
 class QVHighlightsTimeLensDataset(ActivitynetTimeLensDataset):
-    ANNO_PATH_TEST = "/root/autodl-tmp/datasets/TimeLens-Bench/qvhighlights-timelens.json"
-    VIDEO_ROOT = "/root/autodl-tmp/datasets/TimeLens-Bench/videos/qvhighlights"
+    ANNO_PATH_TEST = "/workspace/s/lzw/datasets/TimeLens-Bench/qvhighlights-timelens.json"
+    VIDEO_ROOT = "/workspace/s/lzw/datasets/TimeLens-Bench/videos/qvhighlights"
     DATASET_SOURCE = "QVHighlights-TimeLens"
 
 
 class CharadesTimeLensDataset(ActivitynetTimeLensDataset):
-    ANNO_PATH_TEST = "/root/autodl-tmp/datasets/TimeLens-Bench/charades-timelens.json"
-    VIDEO_ROOT = "/root/autodl-tmp/datasets/TimeLens-Bench/videos/charades"
+    ANNO_PATH_TEST = "/workspace/s/lzw/datasets/TimeLens-Bench/charades-timelens.json"
+    VIDEO_ROOT = "/workspace/s/lzw/datasets/TimeLens-Bench/videos/charades"
     DATASET_SOURCE = "Charades-TimeLens"
 
 
 class TimeLens100KDataset:
-    ANNO_PATH_TRAIN = "/root/autodl-tmp/datasets/TimeLens-100K/timelens-100k.jsonl"
-    VIDEO_ROOT = "/root/autodl-tmp/datasets/TimeLens-100K/videos"
+    ANNO_PATH_TRAIN = "/workspace/s/lzw/datasets/TimeLens-100K/timelens-100k.jsonl"
+    VIDEO_ROOT = "/workspace/s/lzw/datasets/TimeLens-100K/videos"
 
     @classmethod
-    def load_annos(self, split="train"):
+    def load_annos(self, split="train", data_root=None):
         assert split == "train", f"Invalid split: {split}"
+        if data_root is None:
+            annotation_path = self.ANNO_PATH_TRAIN
+            video_root = self.VIDEO_ROOT
+        else:
+            data_root = Path(data_root)
+            annotation_path = data_root / "timelens-100k.jsonl"
+            video_root = data_root / "videos"
+            if not annotation_path.is_file():
+                raise FileNotFoundError(
+                    f"TimeLens-100K annotation file not found: {annotation_path}"
+                )
+            if not video_root.is_dir():
+                raise FileNotFoundError(
+                    f"TimeLens-100K video root not found: {video_root}"
+                )
         raw_anno = []
-        with open(self.ANNO_PATH_TRAIN, "r", encoding="utf-8") as f:
+        with open(annotation_path, "r", encoding="utf-8") as f:
             for line in f:
                 data = json.loads(line)
                 raw_anno.append(data)
 
         annos = []
         for raw_anno in raw_anno:
-            video_path = os.path.join(self.VIDEO_ROOT, raw_anno["video_path"])
+            video_path = os.path.join(video_root, raw_anno["video_path"])
             # if not os.path.exists(video_path):
             # raise FileNotFoundError(f"Video path does not exist: {video_path}")
             for event in raw_anno["events"]:

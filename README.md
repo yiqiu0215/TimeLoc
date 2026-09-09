@@ -1,476 +1,166 @@
-<p align="center">
-  <h1 align="center">TimeLens: Rethinking Video Temporal Grounding with Multimodal LLMs <br/>🏆 CVPR 2026</h1>
-</p>
+# TimeLoc-motion
 
-<p align="center">
-  <a href="https://home.j-zh.top/">Jun Zhang</a>, <a href="http://ttengwang.com/">Teng Wang</a>, <a href="https://geyuying.github.io/">Yuying Ge</a>, <a href="https://geyixiao.com/">Yixiao Ge</a>, <a href="https://scholar.google.com/citations?user=evR3uR0AAAAJ">Xinhao Li</a>, <a href="https://scholar.google.com/citations?user=4oXBp9UAAAAJ&hl=en">Ying Shan</a>, <a href="https://scholar.google.com/citations?user=HEuN8PcAAAAJ&hl=en">Limin Wang</a>
-</p>
+TimeLoc-motion 是一个基于 **Qwen3-VL-2B** 的视频时序定位研究项目。当前实现使用残差交叉时序序列（Residual-Interleaved Temporal Tokens, RIT），在 RGB 时序块后插入所有相邻采样帧的独立差分块，以增强模型对事件边界和状态变化的建模能力。
 
-<p align="center">
-    &nbsp&nbsp📑 <a href="https://arxiv.org/abs/2512.14698"><b>Paper</b></a>&nbsp&nbsp | &nbsp&nbsp🏠 <a href="https://timelens-arc-lab.github.io/"><b>Project Page</b></a>&nbsp&nbsp | 🤗 <a href="https://huggingface.co/collections/TencentARC/timelens"><b>Model & Data</b></a>&nbsp&nbsp | 🏆 <a href="https://timelens-arc-lab.github.io/#leaderboard"><b>TimeLens-Bench Leaderboard</b></a>&nbsp&nbsp
-</p>
+> 当前仓库提供模型、数据处理、两阶段训练与评测代码。所有性能结论均需以服务器端正式实验结果为准。
 
-## 📰 News
-- **2026.02.26**: 🚀 Training for **TimeLens-7B** based on **Qwen2.5-VL-7B** is available on the [**train**](https://github.com/TencentARC/TimeLens/tree/train) branch.
-- **2026.02.26**: 🚀 We now support training **TimeLens-8B** based on **Qwen3-8B-VL**.
-- **2026.02.22**: 🎉 TimeLens has been accepted to **CVPR 2026**.
+## 方法概览
 
-## 🔎 Overview
-TimeLens rethinks video temporal grounding (VTG) with MLLMs along two axes:
-- **Data Quality**. We expose critical quality issues in existing VTG benchmarks and propose quality-assured datasets for both training and evaluation.
-- **Algorithmic Design**. Building upon reliable data, we explore effective timestamp encoding strategies and training recipes, achieving state-of-the-art performance among open-source models.
+按 FPS 采样得到 N 帧 F0,...,F(N−1)。对统一缩放和归一化后的所有相邻帧直接计算 R_i = F_(i+1) − F_i，共 N−1 个独立三通道有符号差分。不额外解码区间内帧，也不跨时间累加差分。
 
-## 📚 Quick Navigation
-In this repository, we release:
-- 🤖 **TimeLens Models**: State-of-the-art open-source models for video temporal grounding.
-  - [Model Usage](#-using-timelens-models)
-- 📊 **TimeLens-Bench**: a comprehensive, high-quality evaluation benchmark for video temporal grounding.
-  - 🏆 [Leaderboard](https://timelens-arc-lab.github.io/#leaderboard)
-  - [Evaluation Guide](#-evaluation-on-timelens-bench)
-- 🏋️ **TimeLens-100K**: a large-scale, diverse, high-quality training dataset for video temporal grounding, annotated with Gemini-2.5-Pro.
-  - [Training Guide](#️-training-on-timelens-100k)
+RGB 仍按 temporal_patch_size=2 分为 K=ceil(N/2) 个块。每个差分在时间维复制两次，与 RGB 共用冻结的 Conv3D Patch Embedding。每个 RGB 块后依次放置块内差分和连接下一块的差分（若存在）。例如四帧的序列为：
 
-## 📦 Installation
+RGB(F0,F1), R0, R1, RGB(F2,F3), R2。
 
-Clone this repository and navigate to the folder
-```bash
-git clone https://github.com/TencentARC/TimeLens.git
-cd TimeLens
+总视觉块数为 ceil(N/2)+N−1。奇数帧的最后一个 RGB 块复制末帧补齐，但不为补齐帧生成差分。
+
+Prompt 中的文本时间戳使用 RGB block 和 residual block 各自真实时间区间的中点。视觉 token 不再叠加连续时间编码，保留 Qwen3-VL 原有位置编码。
+
+```mermaid
+flowchart LR
+    V["输入视频"] --> S["按 FPS 采样 RGB 帧"]
+    S --> B["按 temporal_patch_size=2 分块"]
+    B --> RP["冻结的共享 RGB Patch Embedding"]
+    S --> D["所有相邻采样帧直接差分"]
+    D --> C["每个差分在时间维复制到深度 2"]
+    C --> RP
+    RP --> I["RGB / residual token 交叉排列"]
+    I --> E["冻结的 Qwen3-VL ViT"]
+    E --> M["可训练 Merger / DeepStack / 残差适配参数"]
+    M --> L["Qwen3-VL 语言模型"]
 ```
 
-Create a Conda environment and install the required packages
+### 参数训练策略
+
+- 冻结 Qwen3-VL ViT 主干及共享 Patch Embedding。
+- 训练视觉 Merger、DeepStack、残差适配参数和语言模型参数。
+- RGB 与 residual 共同占用 `total_tokens` 指定的总视觉 token budget。
+- residual token 同样参与 DeepStack 特征构建。
+- 训练和评测必须使用一致的 FPS、token budget 与 residual 配置。
+
+### Prompt 结构
+
+系统会在视频内容前加入如下视觉序列说明：
+
+```text
+The visual input is an interleaved sequence of RGB frame blocks and adjacent-frame
+residual-motion blocks. Each RGB block contains two sampled frames and is followed
+by their within-pair difference and then the difference to the next pair, when available.
+Each residual is the later sampled frame minus the immediately preceding sampled frame.
+The timestamp before every block is its real temporal midpoint.
+```
+
+随后拼接任务指令、按真实区间中点生成的时间戳提示以及对应的监督答案。
+
+## 环境安装
+
+建议在独立 Conda 环境中安装依赖：
+
 ```bash
-conda create -n timelens python=3.11 -y
-conda activate timelens
+conda create -n timeloc-motion python=3.11 -y
+conda activate timeloc-motion
 
-# install dependencies for inference
-pip install -r requirements.txt -f https://download.pytorch.org/whl/cu124 # We use CUDA Version 12.4
-
-# Optional: install extra dependencies for training
+pip install -r requirements.txt
 pip install -r requirements_train.txt
-
-# Install flash-attn (required for BOTH training and inference!)
-pip install flash-attn==2.7.4.post1 --no-build-isolation --no-cache-dir
 ```
 
-## 🤖 Using TimeLens Models
-TimeLens models are a family of MLLMs with SotA video temporal grounding performance. They are built upon the Qwen2.5-VL and Qwen3-VL baselines through training on our high-quality [TimeLens-100K](#️-training-on-timelens-100k) dataset, leveraging our carefully crafted RLVR (reinforcement learning with verifiable rewards) recipe and improved timestamp encoding strategy.
+FlashAttention、CUDA 和 PyTorch 版本需要根据服务器环境匹配安装。
 
-### 🚀 Quick Start
-All models are available on Hugging Face and support out-of-the-box inference using the 🤗Transformers library. For detailed usage instructions and code examples, please refer to the specific model's Hugging Face page linked below.
+## 两阶段训练
 
-### 🏆 Model Zoo & Performance
-The following table lists our models with their Hugging Face links and grounding performance:
-<table>
-  <thead>
-    <tr>
-      <th rowspan="2" align="center">Model <br>(with 🤗HuggingFace Link)</th>
-      <th colspan="4" align="center">Charades-TimeLens</th>
-      <th colspan="4" align="center">ActivityNet-TimeLens</th>
-      <th colspan="4" align="center">QVHighlights-TimeLens</th>
-    </tr>
-    <tr>
-      <th align="center">R1<br>@0.3</th>
-      <th align="center">R1<br>@0.5</th>
-      <th align="center">R1<br>@0.7</th>
-      <th align="center">mIoU</th>
-      <th align="center">R1<br>@0.3</th>
-      <th align="center">R1<br>@0.5</th>
-      <th align="center">R1<br>@0.7</th>
-      <th align="center">mIoU</th>
-      <th align="center">R1<br>@0.3</th>
-      <th align="center">R1<br>@0.5</th>
-      <th align="center">R1<br>@0.7</th>
-      <th align="center">mIoU</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><a href="https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct">Qwen2.5-VL-7B-Instruct</a></td>
-      <td align="center">59.7</td>
-      <td align="center">37.8</td>
-      <td align="center">16.6</td>
-      <td align="center">39.3</td>
-      <td align="center">44.1</td>
-      <td align="center">31.0</td>
-      <td align="center">16.1</td>
-      <td align="center">31.4</td>
-      <td align="center">41.5</td>
-      <td align="center">27.8</td>
-      <td align="center">15.2</td>
-      <td align="center">31.6</td>
-    </tr>
-    <tr>
-      <td><a href="https://huggingface.co/TencentARC/TimeLens-7B"><b>TimeLens-7B</b>🚀</a></td>
-      <td align="center"><b>70.5</b></td>
-      <td align="center"><b>55.6</b></td>
-      <td align="center"><b>28.4</b></td>
-      <td align="center"><b>48.8</b></td>
-      <td align="center"><b>62.8</b></td>
-      <td align="center"><b>51.0</b></td>
-      <td align="center"><b>32.6</b></td>
-      <td align="center"><b>46.2</b></td>
-      <td align="center"><b>74.1</b></td>
-      <td align="center"><b>62.7</b></td>
-      <td align="center"><b>43.1</b></td>
-      <td align="center"><b>56.0</b></td>
-    </tr>
-    <tr>
-      <td><a href="https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct">Qwen3-VL-8B-Instruct</a></td>
-      <td align="center">69.2</td>
-      <td align="center">53.4</td>
-      <td align="center">27.5</td>
-      <td align="center">48.3</td>
-      <td align="center">62.1</td>
-      <td align="center">51.2</td>
-      <td align="center">34.4</td>
-      <td align="center">46.8</td>
-      <td align="center">74.2</td>
-      <td align="center">64.6</td>
-      <td align="center">49.3</td>
-      <td align="center">59.4</td>
-    </tr>
-    <tr>
-      <td><a href="https://huggingface.co/TencentARC/TimeLens-8B"><b>TimeLens-8B</b>🚀</a></td>
-      <td align="center"><b>76.6</b></td>
-      <td align="center"><b>63.0</b></td>
-      <td align="center"><b>35.2</b></td>
-      <td align="center"><b>55.2</b></td>
-      <td align="center"><b>68.9</b></td>
-      <td align="center"><b>58.4</b></td>
-      <td align="center"><b>40.6</b></td>
-      <td align="center"><b>53.2</b></td>
-      <td align="center"><b>80.2</b></td>
-      <td align="center"><b>71.6</b></td>
-      <td align="center"><b>55.5</b></td>
-      <td align="center"><b>65.5</b></td>
-    </tr>
-  </tbody>
-</table>
+训练采用两个连续阶段，且脚本会自动将 Stage 1 输出权重传递给 Stage 2。
 
-> TimeLens-7B is fine-tuned from Qwen2.5-VL-7B-Instruct, and TimeLens-8B is fine-tuned from Qwen3-VL-8B-Instruct.
+### Stage 1：GEB+
 
-> [!NOTE]
-> For detailed comparison with other models, please refer to the 🏆 [Leaderboard](https://timelens-arc-lab.github.io/#leaderboard).
+使用 GEB+ 的“给定 boundary timestamp，生成边界前后状态”任务训练残差运动建模相关能力。
 
+### Stage 2：TimeLens 20K
 
-## 📊 Evaluation on TimeLens-Bench
+导入 Stage 1 参数，在当前 baseline 的约 20K duration-balanced、纯视觉子集上完成最终训练，不使用音频。
 
-### Download TimeLens-Bench
+一次性启动两个阶段：
 
-Download the [TimeLens-Bench dataset](https://huggingface.co/datasets/TencentARC/TimeLens-Bench) from Hugging Face and place it in the `data/TimeLens-Bench` directory:
 ```bash
-hf download TencentARC/TimeLens-Bench \
-  --repo-type=dataset \
-  --local-dir data/TimeLens-Bench
+mkdir -p train_logs
+
+nohup env CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
+  bash train_scripts/run_two_stage_rit_qwen3_2b.sh \
+  --model_path /path/to/Qwen3-VL-2B-Instruct \
+  --gebplus_annotation_path /path/to/gebplus/annotations.json \
+  --gebplus_video_root /path/to/gebplus/videos \
+  --timelens_data_root /path/to/timelens/data \
+  --target_size 20000 \
+  --batch_per_device 1 \
+  --global_batch_size 128 \
+  --num_devices 8 \
+  --total_tokens 8192 \
+  --fps 1 \
+  > train_logs/train_2stage.log 2>&1 &
 ```
 
-Extract the compressed videos:
+如果 Stage 1 已经完成，可以单独启动 Stage 2：
+
 ```bash
-mkdir -p data/TimeLens-Bench/videos
-find data/TimeLens-Bench/video_shards -name "*.tar.gz" | \
-  xargs -P 4 -I {} tar -xzf {} -C data/TimeLens-Bench/videos # Parallel extraction with 4 processes
+mkdir -p train_logs
+
+nohup env CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
+  bash train_scripts/run_stage2_rit_qwen3_2b.sh \
+  --stage1_model_path /path/to/stage1-gebplus \
+  --timelens_data_root /path/to/timelens/data \
+  --target_size 20000 \
+  --batch_per_device 1 \
+  --global_batch_size 128 \
+  --num_devices 8 \
+  --total_tokens 8192 \
+  --fps 1 \
+  > train_logs/train_stage2.log 2>&1 &
 ```
 
-The folder structure should look like this:
-```
-TimeLens/
-└── data/
-    └── TimeLens-Bench/
-        ├── activitynet-timelens.json
-        ├── charades-timelens.json
-        ├── qvhighlights-timelens.json
-        ├── videos/              # extracted videos
-        │   ├── activitynet/
-        │   ├── charades/
-        │   └── qvhighlights/
-        └── video_shards/        # compressed videos (can be deleted after extraction)
-```
+训练脚本支持 `use_liger`，并关闭与当前多模态训练路径不兼容的 fused linear cross entropy。具体参数以脚本内的命令行帮助和当前配置为准。
 
-### Evaluate with Our Codebase (TimeLens / Qwen-VL Models)
+## 评测
 
-Our codebase supports evaluation of the following models:
+评测程序会根据 checkpoint 配置识别 RIT 模型。FPS、`min_tokens` 和 `total_tokens` 应与训练 checkpoint 保持一致。
 
-| Model | Supported |
-|:----------:|:---------:|
-| [TimeLens-7B](https://huggingface.co/TencentARC/TimeLens-7B) | ✅ |
-| [TimeLens-8B](https://huggingface.co/TencentARC/TimeLens-8B) | ✅ |
-| [Qwen2.5-VL](https://huggingface.co/collections/Qwen/qwen25-vl) | ✅ |
-| [Qwen3-VL](https://huggingface.co/collections/Qwen/qwen3-vl) | ✅ |
-
-The evaluation script is [`scripts/eval_timelens_bench.sh`](./scripts/eval_timelens_bench.sh). You can set the following environment variables:
-- **`model_path`**: Path or HuggingFace ID of the model to evaluate. Default: `TencentARC/TimeLens-8B`
-- **`datasets`**: Comma-separated list of datasets to evaluate. Default: `charades-timelens,activitynet-timelens,qvhighlights-timelens`
-- **`CUDA_VISIBLE_DEVICES`**: GPU indices to use (e.g., `0,1,2,3`). Default: Auto-detect all available GPUs
-- **`pred_path`**: Directory to save results. Default: `./logs`
-- **`min_tokens`**: Minimum tokens for video encoding. Default: `64`
-- **`total_tokens`**: Total tokens for video encoding. Default: `14336`
-- **`FPS`**: Frames per second for video sampling. Default: `2`
-
-**Example 1**: Evaluate TimeLens-8B (default settings)
 ```bash
-model_path="TencentARC/TimeLens-8B" bash scripts/eval_timelens_bench.sh
-```
-
-**Example 2**: Evaluate TimeLens-7B on specific datasets with specific GPUs
-```bash
-CUDA_VISIBLE_DEVICES=0,1 \
-datasets="activitynet-timelens,qvhighlights-timelens" \
-model_path="TencentARC/TimeLens-7B" \
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
+model_path="/path/to/stage2-timelens-20k" \
+datasets="charades-timelens" \
+min_tokens=64 \
+total_tokens=8192 \
+FPS=1 \
+pred_path="./eval_res/" \
 bash scripts/eval_timelens_bench.sh
 ```
 
-**Example 3**: Evaluate Qwen3-VL with a local model path and a custom path to save results:
-```bash
-pred_path="./path/to/results" \
-model_path="path/to/Qwen3-VL-8B-Instruct" \
-bash scripts/eval_timelens_bench.sh
+## 关键目录
+
+```text
+TimeLoc-motion/
+├── training/
+│   ├── models/rit_qwen3_vl.py          # RIT 模型与共享 Patch Embedding 路径
+│   └── data/residual_video.py           # 相邻采样帧差分与时序构造
+├── train_scripts/
+│   ├── run_two_stage_rit_qwen3_2b.sh    # GEB+ -> TimeLens 20K 两阶段训练
+│   └── run_stage2_rit_qwen3_2b.sh       # Stage 2 独立训练
+├── scripts/eval_timelens_bench.sh        # 时序定位评测入口
+├── evaluation/                           # 推理与指标计算
+└── ideas_docs/
+    └── adjacent_sampled_frame_residuals/design.md
 ```
 
-> [!TIP]
-> **Faster Evaluation with DataLoader** 🚀
->
-> Our evaluation script [evaluation/eval_dataloader.py](./evaluation/eval_dataloader.py) supports multi-GPU inference. More importantly, we use [PyTorch DataLoader](https://pytorch.org/docs/stable/data.html) with multiple workers to prefetch and preprocess video data in parallel, while the GPU handles model inference. This significantly accelerates evaluation for long-video tasks like video temporal grounding. Additionally, this approach is more **research-friendly** compared to inference engines like vLLM, as it allows easy customization of the model inference code.
->
-> Evaluating TimeLens-7B on ActivityNet-TimeLens with 8× H20 GPUs:
->
-> | Method | Time |
-> |:------:|:----:|
-> | Without DataLoader | 1h23min |
-> | With DataLoader | **~34min (~2.4x faster)** |
+## 兼容性与实验注意事项
 
+- 当前结构版本为 `shared_rgb_patch_adjacent_v3`。
+- 旧版 RIT checkpoint 的序列语义与当前方案不同，加载入口会拒绝旧结构版本。请从原始 Qwen3-VL 权重重新进行两阶段训练。
+- 修改 FPS、`temporal_patch_size`、token budget 后，需要同时检查训练和评测预处理。
+- 已删除 residual_num_diffs 参数。固定总预算下，新增差分块会降低可用空间分辨率或最大采样帧数；效果需实验验证。
+- 本仓库不包含数据集、模型权重、训练输出和正式实验指标。
 
-### Evaluate Your Own Model
+完整设计说明见 [ideas_docs/adjacent_sampled_frame_residuals/design.md](ideas_docs/adjacent_sampled_frame_residuals/design.md)。
 
-To evaluate your own model on TimeLens-Bench, follow these steps:
+## 致谢
 
-1. **Load annotations**: Use our provided [timelens_data.py](./timelens/dataset/timelens_data.py) for loading annotations.
+本项目基于 Qwen3-VL、LLaMA-Factory 相关训练组件以及公开视频时序定位研究代码进行开发。感谢相关开源项目与数据集作者。
 
-2. **Run inference and save results**: Run inference with your model and save results in a JSON or JSONL file with the following format:
-
-   ```python
-   {
-       f'{video_name}>>>{query}>>>{ground_truth_span}': {
-           "timestamps": timestamps,  # the predicted time span from the model
-           "answers": answer,  # the full answer text from the model
-       }
-   }
-   ```
-
-   An example of a correctly saved JSON file:
-
-   ```json
-   {
-       "v_BrgYIg6UXhU.mp4>>>A man wearing a blue jacket approaches a blue car>>>[0.0, 4.0]":
-       {
-           "timestamps": [[0.0, 5.0]],
-           "answers": "The event happens in 0.0 - 5.0 seconds."
-       },
-       ...
-   }
-   ```
-
-    In your inference results, you can provide **either** `timestamps` or `answers`. In the next step (Step 3, compute metrics), `evaluation/compute_metrics.py` applies the following logic:
-      - If `timestamps` is provided, IoU metrics are computed directly from it.
-   - If only `answers` is provided, the script will automatically extract the timestamp pair from the answer text.
-
-3. **Compute metrics**: Use our provided [evaluation/compute_metrics.py](./evaluation/compute_metrics.py) to compute metrics.
-
-  ```bash
-  python evaluation/compute_metrics.py -f /path/to/your_result.json
-  ```
-> For more details on implementing the above steps, you can refer to the [evaluation scripts](#evaluate-with-our-codebase-timelens--qwen-vl-models) of our supported models.
-
-
-## 🏋️ Training on TimeLens-100K
-
-### Download TimeLens-100K
-
-Download the [TimeLens-100K dataset](https://huggingface.co/datasets/TencentARC/TimeLens-100K) from Hugging Face and place it in the `data/TimeLens-100K` directory:
-```bash
-hf download TencentARC/TimeLens-100K \
-  --repo-type=dataset \
-  --local-dir data/TimeLens-100K
-```
-
-Extract the compressed videos:
-```bash
-mkdir -p data/TimeLens-100K/videos
-find data/TimeLens-100K/video_shards -name "*.tar.gz" | \
-  xargs -P 4 -I {} tar -xzf {} -C data/TimeLens-100K/videos # Parallel extraction with 4 processes
-```
-
-The folder structure should look like this:
-```
-TimeLens/
-└── data/
-    └── TimeLens-100K/
-        ├── README.md
-        ├── timelens-100k.jsonl
-        ├── videos/              # extracted videos
-        │   ├── cosmo_cap/
-        │   ├── didemo/
-        │   ├── hirest/
-        │   ├── internvid_vtime/
-        │   └── queryd/
-        └── video_shards/        # compressed videos (can be deleted after extraction)
-```
-
-### Train with Your Own Codebase
-
-We provide an example script [timelens_data.py](./timelens/dataset/timelens_data.py) for loading TimeLens-100K annotations. You can refer to this code to integrate TimeLens-100K into your own training codebase.
-
-### Use Our Training Code
-
-#### TimeLens-8B Training (based on Qwen3-VL)
-TimeLens-8B training is released as a 3-stage pipeline (SFT -> filter data -> GRPO):
-
-1. **SFT on TimeLens-100K (30K sampled)**
-   We provide a prebuilt SFT checkpoint:
-   `https://huggingface.co/JungleGym/TimeLens-Qwen3-VL-8B-SFT`
-   You can download it directly:
-
-```bash
-hf download JungleGym/TimeLens-Qwen3-VL-8B-SFT \
-  --repo-type model \
-  --local-dir output/TimeLens-8B/sft/prebuilt
-```
-
-   You can also reproduce SFT by yourself:
-
-```bash
-bash train_scripts/run_sft_qwen3_8b.sh \
-  --model_path "/path/to/Qwen3-VL-8B-Instruct"
-```
-
-2. **Run filtering inference on full TimeLens-100K and compute IoU**
-   We provide precomputed filtering inference output:
-   `https://huggingface.co/datasets/JungleGym/TimeLens-Qwen3-VL-8B-filter-data/blob/main/FPS-2-maxframes-448_TOTALtokens-14336_MINtokens-64---20251209_223300/gemini_refined_data.jsonl`
-   You can download it directly:
-
-```bash
-hf download JungleGym/TimeLens-Qwen3-VL-8B-filter-data \
-  FPS-2-maxframes-448_TOTALtokens-14336_MINtokens-64---20251209_223300/gemini_refined_data.jsonl \
-  --repo-type dataset \
-  --local-dir output/TimeLens-8B/filter-data/prebuilt
-```
-
-   You can also generate it by yourself:
-
-```bash
-bash scripts/filter_data/filter_data_qwen3_vl.sh \
-  --model_path "output/TimeLens-8B/sft/<your_sft_run_dir>" \
-  --dataset gemini_refined_data
-```
-
-This stage writes inference output to:
-`output/TimeLens-8B/filter-data/.../gemini_refined_data.jsonl`
-
-3. **GRPO training from SFT checkpoint (filtering jsonl as input)**
-   If you use prebuilt files downloaded above, use:
-   `--model_path output/TimeLens-8B/sft/prebuilt` and
-   `--raw_anno_path output/TimeLens-8B/filter-data/prebuilt/FPS-2-maxframes-448_TOTALtokens-14336_MINtokens-64---20251209_223300/gemini_refined_data.jsonl`
-
-   Training + evaluation:
-
-```bash
-bash train_scripts/run_grpo_and_eval_qwen3_8b.sh \
-  --model_path "output/TimeLens-8B/sft/<your_sft_run_dir>" \
-  --raw_anno_path "output/TimeLens-8B/filter-data/<your_filter_run_dir>/gemini_refined_data.jsonl"
-```
-
-Training only:
-
-```bash
-bash train_scripts/run_grpo_qwen3_8b.sh \
-  --model_path "output/TimeLens-8B/sft/<your_sft_run_dir>" \
-  --raw_anno_path "output/TimeLens-8B/filter-data/<your_filter_run_dir>/gemini_refined_data.jsonl"
-```
-
-Final GRPO checkpoints are saved under:
-`output/TimeLens-8B/grpo/...`
-
-#### Evaluate Trained Checkpoints
-
-Use the existing TimeLens-Bench evaluation code directly:
-
-```bash
-model_path="output/TimeLens-8B/grpo/<your_grpo_run_dir>" \
-bash scripts/eval_timelens_bench.sh
-```
-
-#### TimeLens-7B training (based on Qwen2.5-VL)
-
-TimeLens-7B training uses **Qwen2.5-VL-7B-Instruct** as the model weights, while forcing the processor/config path to **TimeLens-7B** to align timestamp interleave behavior. It has only two stages: **filter data** then **GRPO** (no SFT).
-
-1. **Filter data**:
-
-   We provide precomputed filtering inference output:
-   `https://huggingface.co/datasets/JungleGym/TimeLens-Qwen2.5-VL-7B-filter-data/blob/main/FPS-2-maxframes-448_TOTALtokens-14336_MINtokens-64---20260301_013151/gemini_refined_data.jsonl`
-   You can download it directly:
-
-```bash
-hf download JungleGym/TimeLens-Qwen2.5-VL-7B-filter-data \
-  FPS-2-maxframes-448_TOTALtokens-14336_MINtokens-64---20260301_013151/gemini_refined_data.jsonl \
-  --repo-type dataset \
-  --local-dir output/TimeLens-7B/filter-data/prebuilt
-```
-
-   You can also generate it by yourself:
-
-```bash
-bash scripts/filter_data/filter_data_qwen25_vl_7b.sh \
-  --model_path "/path/to/Qwen2.5-VL-7B-Instruct" \
-  --processor_path "TencentARC/TimeLens-7B"
-```
-
-Output: `output/TimeLens-7B/filter-data/.../gemini_refined_data.jsonl`
-
-2. **GRPO training** from base model (filtering jsonl as input):
-
-   If you use the prebuilt file downloaded above, use:
-   `--raw_anno_path output/TimeLens-7B/filter-data/prebuilt/FPS-2-maxframes-448_TOTALtokens-14336_MINtokens-64---20260301_013151/gemini_refined_data.jsonl`
-
-   Training + evaluation:
-
-```bash
-bash train_scripts/run_grpo_and_eval_qwen25_vl_7b.sh \
-  --model_path "/path/to/Qwen2.5-VL-7B-Instruct" \
-  --processor_path "TencentARC/TimeLens-7B" \
-  --raw_anno_path "output/TimeLens-7B/filter-data/<your_filter_run_dir>/gemini_refined_data.jsonl"
-```
-
-Training only:
-
-```bash
-bash train_scripts/run_grpo_qwen25_vl_7b.sh \
-  --model_path "/path/to/Qwen2.5-VL-7B-Instruct" \
-  --processor_path "TencentARC/TimeLens-7B" \
-  --raw_anno_path "output/TimeLens-7B/filter-data/<your_filter_run_dir>/gemini_refined_data.jsonl"
-```
-
-
-Final GRPO checkpoints are saved under:
-`output/TimeLens-7B/rlvr/...`
-
-## 📝 Citation
-If you find our paper, code, model, and data helpful for your research and applications, please consider giving a star ⭐ and citation 📝 :)
-
-```bibtex
-@article{zhang2025timelens,
-  title={TimeLens: Rethinking Video Temporal Grounding with Multimodal LLMs},
-  author={Zhang, Jun and Wang, Teng and Ge, Yuying and Ge, Yixiao and Li, Xinhao and Shan, Ying and Wang, Limin},
-  journal={arXiv preprint arXiv:2512.14698},
-  year={2025}
-}
-```
-
-## 🙏 Acknowledgement
-
-Our project is built upon the following awesome works:
-
-- [VideoMind](https://github.com/yeliudev/VideoMind)
-- [Qwen3-VL and Qwen2.5-VL](https://github.com/QwenLM/Qwen3-VL)
-- [Qwen-VL-Series-Finetune](https://github.com/2U1/Qwen-VL-Series-Finetune)
-- [TRL - Transformer Reinforcement Learning](https://github.com/huggingface/trl)
-- [transformers](https://github.com/huggingface/transformers)
+连续时间编码移除后，旧 checkpoint 中的 time_position_embedding.* 权重不再使用；严格加载旧 state dict 会出现多余键。当前配置将 use_true_midpoint_time_embedding 记录为 false。该变化需要重新进行训练与评测验证。

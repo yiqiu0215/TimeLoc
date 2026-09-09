@@ -26,6 +26,7 @@ echo -e "\e[1;36mEvaluating datasets:\e[0m ${datasets[*]}"
 #---------------------------- Model Path ----------------------------#
 # Use model path from environment variable or default
 model_path=${model_path:-"TencentARC/TimeLens-8B"}
+processor_path=${processor_path:-""}
 
 #---------------------------- Configuration ----------------------------#
 min_tokens=${min_tokens:-64}
@@ -64,6 +65,7 @@ for dataset in "${datasets[@]}"; do
             --dataset $dataset \
             --pred_path $current_pred_path \
             --model_path $model_path \
+            --processor_path "$processor_path" \
             --min_tokens $min_tokens \
             --total_tokens $total_tokens \
             --fps $FPS \

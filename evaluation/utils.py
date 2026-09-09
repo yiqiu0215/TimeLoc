@@ -4,17 +4,49 @@ import copy
 
 from qwen_vl_utils import process_vision_info
 from torch.utils.data import Dataset
+from transformers import BatchFeature
+
+from training.data.residual_video import prepare_rit_video_inputs
 
 GROUNDER_PROMPT = (
     "Please find the visual event described by the sentence '{}', determining its starting and ending times. "
     "The format should be: 'The event happens in <start time> - <end time> seconds'."
 )
 
-# prompt for TimeLens-7B (based on Qwen2.5-VL) with interleaved textual timestamps
+RIT_GROUNDER_PROMPT = (
+    "The visual input is an interleaved sequence of RGB frame blocks and "
+    "adjacent-frame residual-motion blocks. Each RGB block contains two sampled frames "
+    "and is followed by their within-pair difference and then the difference to the next pair, when available. "
+    "Each residual is the later sampled frame minus the immediately preceding sampled frame. "
+    "The timestamp before every block is its real temporal midpoint. "
+) + GROUNDER_PROMPT
+
+# prompt for Qwen2.5-VL TimeLens models with interleaved textual timestamps
 GROUNDER_PROMPT_TEXT_TIMESTAMP = (
     "You are given a video with multiple frames. "
     "The numbers before each video frame indicate its sampling timestamp (in seconds). "
 ) + GROUNDER_PROMPT
+
+
+def _is_qwen2_timelens_model(model_path: str) -> bool:
+    if not model_path:
+        return False
+    m = model_path.lower()
+    return "timelens-3b" in m or "timelens-7b" in m
+
+
+def _is_qwen2_model(model_path: str) -> bool:
+    if not model_path:
+        return False
+    m = model_path.lower()
+    return "qwen2" in m or "qwen2.5-vl" in m or "qwen2.5_vl" in m
+
+
+def _is_qwen3_model(model_path: str) -> bool:
+    if not model_path:
+        return False
+    m = model_path.lower()
+    return "qwen3" in m or "timelens-2b" in m or "timelens-8b" in m
 
 
 class GroundingDataset(Dataset):
@@ -23,8 +55,18 @@ class GroundingDataset(Dataset):
         self.annos = annos
         self.processor = processor
         self.args = args
-        if "timelens-7b" in args.model_path.lower():
-            # prompt for TimeLens-7B (based on Qwen2.5-VL) with interleaved textual timestamps
+        self._format_model_path = (
+            getattr(args, "format_model_path", None)
+            or getattr(args, "processor_path", None)
+            or args.model_path
+        )
+        self._is_qwen2_timelens = _is_qwen2_timelens_model(self._format_model_path)
+        self._is_qwen2 = _is_qwen2_model(self._format_model_path)
+        self._is_qwen3 = _is_qwen3_model(self._format_model_path)
+        if getattr(args, "use_residual_tokens", False):
+            self.prompt = RIT_GROUNDER_PROMPT
+        elif self._is_qwen2_timelens:
+            # Qwen2.5-TimeLens uses interleaved textual timestamps.
             self.prompt = GROUNDER_PROMPT_TEXT_TIMESTAMP
         else:
             self.prompt = GROUNDER_PROMPT
@@ -38,15 +80,15 @@ class GroundingDataset(Dataset):
         video_path = anno["video_path"]
         query = anno["query"]
 
-        if "qwen3" in self.args.model_path.lower() or "timelens-8b" in self.args.model_path.lower():
+        if self._is_qwen3:
             # for TimeLens-8B(based on Qwen3-VL) and Qwen3-VL models
             downsample_rate = 32
-        elif "qwen2" in self.args.model_path.lower() or "timelens-7b" in self.args.model_path.lower():
-            # for TimeLens-7B (based on Qwen2.5-VL) and Qwen2.5-VL models
+        elif self._is_qwen2 or self._is_qwen2_timelens:
+            # for Qwen2.5-TimeLens and Qwen2.5-VL models
             downsample_rate = 28
         else:
             raise NotImplementedError(
-                f"Model {self.args.model_path} not supported yet."
+                f"Model {self._format_model_path} not supported yet."
             )
 
         messages = [
@@ -65,12 +107,28 @@ class GroundingDataset(Dataset):
             }
         ]
 
+        if getattr(self.args, "fps_max_frames", None) is not None:
+            messages[0]["content"][0]["max_frames"] = int(
+                self.args.fps_max_frames
+            )
+
+        if getattr(self.args, "use_residual_tokens", False):
+            inputs = prepare_rit_video_inputs(
+                self.processor,
+                messages,
+                min_tokens=self.args.min_tokens,
+                total_tokens=self.args.total_tokens,
+                add_generation_prompt=True,
+            )
+            inputs.pop("rit_text")
+            return {"inputs": BatchFeature(data=inputs), "anno": anno}
+
         text = self.processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
 
-        if "timelens-7b" in self.args.model_path.lower():
-            # for TimeLens-7B (based on Qwen2.5-VL) with interleaved textual timestamps
+        if self._is_qwen2_timelens:
+            # for Qwen2.5-TimeLens with interleaved textual timestamps
             images, videos = process_vision_info(messages, return_video_metadata=True)
             inputs = self.processor(
                 text=[text],
@@ -79,10 +137,7 @@ class GroundingDataset(Dataset):
                 padding=True,
                 return_tensors="pt",
             )
-        elif (
-            "qwen3" in self.args.model_path.lower()
-            or "timelens-8b" in self.args.model_path.lower()
-        ):
+        elif self._is_qwen3:
             # for TimeLens-8B(based on Qwen3-VL) and Qwen3-VL models
             images, videos, video_kwargs = process_vision_info(
                 messages,
@@ -101,7 +156,7 @@ class GroundingDataset(Dataset):
                 return_tensors="pt",
                 **video_kwargs,
             )
-        elif "qwen2" in self.args.model_path.lower():
+        elif self._is_qwen2:
             # for Qwen2.5-VL model
             images, videos, video_kwargs = process_vision_info(
                 messages, return_video_kwargs=True
@@ -116,7 +171,7 @@ class GroundingDataset(Dataset):
             )
         else:
             raise NotImplementedError(
-                f"Model {self.args.model_path} not supported yet."
+                f"Model {self._format_model_path} not supported yet."
             )
 
         return {"inputs": inputs, "anno": anno}
