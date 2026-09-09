@@ -1,5 +1,4 @@
 import math
-from pathlib import Path
 
 import torch
 from qwen_vl_utils import process_vision_info, smart_resize
@@ -29,21 +28,6 @@ def _find_video_content(messages):
             f"RIT preprocessing currently requires exactly one video, got {len(video_contents)}."
         )
     return video_contents[0]
-
-
-def _decode_dense_frames(video_path: str, frame_indices: list[int]) -> torch.Tensor:
-    if video_path.startswith("file://"):
-        video_path = video_path[7:]
-    if not Path(video_path).is_file():
-        raise FileNotFoundError(f"Residual source video not found: {video_path}")
-
-    import decord
-
-    reader = decord.VideoReader(video_path)
-    max_index = len(reader) - 1
-    clipped_indices = [min(max(int(index), 0), max_index) for index in frame_indices]
-    frames = reader.get_batch(clipped_indices).asnumpy()
-    return torch.from_numpy(frames).permute(0, 3, 1, 2)
 
 
 def _normalize_frames(frames: torch.Tensor, video_processor) -> torch.Tensor:
@@ -104,15 +88,11 @@ def prepare_rit_video_inputs(
     processor,
     messages,
     *,
-    residual_num_diffs: int,
     min_tokens: int,
     total_tokens: int,
     add_generation_prompt: bool = False,
 ):
-    if residual_num_diffs <= 0:
-        raise ValueError("residual_num_diffs must be positive.")
-
-    video_content = _find_video_content(messages)
+    _find_video_content(messages)
     images, decoded_videos, video_kwargs = process_vision_info(
         messages,
         image_patch_size=16,
@@ -138,7 +118,8 @@ def prepare_rit_video_inputs(
             f"RIT currently requires temporal_patch_size=2, got {temporal_patch_size}."
         )
     num_rgb_blocks = math.ceil(base_video.shape[0] / temporal_patch_size)
-    num_interleaved_blocks = 2 * num_rgb_blocks - 1
+    num_residual_blocks = base_video.shape[0] - 1
+    num_interleaved_blocks = num_rgb_blocks + num_residual_blocks
     if num_interleaved_blocks * min_tokens > total_tokens:
         raise ValueError(
             "Combined visual token budget is too small for the requested minimum: "
@@ -193,38 +174,13 @@ def prepare_rit_video_inputs(
         for index in range(num_rgb_blocks)
     ]
 
-    dense_indices = []
-    for block_index in range(num_rgb_blocks - 1):
-        start_index = frame_indices[2 * block_index + 1]
-        end_index = frame_indices[2 * block_index + 2]
-        dense_indices.extend(
-            torch.linspace(
-                start_index, end_index, residual_num_diffs + 1
-            ).round().to(torch.long).tolist()
-        )
-
     residual_midpoints = [
-        (base_timestamps[2 * index + 1] + base_timestamps[2 * index + 2]) / 2
-        for index in range(num_rgb_blocks - 1)
+        (base_timestamps[index] + base_timestamps[index + 1]) / 2
+        for index in range(num_residual_blocks)
     ]
-    if dense_indices:
-        dense_frames = _decode_dense_frames(video_content["video"], dense_indices)
-        dense_frames = vision_functional.resize(
-            dense_frames,
-            [resized_height, resized_width],
-            interpolation=InterpolationMode.BICUBIC,
-            antialias=True,
-        )
-        dense_frames = _normalize_frames(dense_frames, processor.video_processor)
-        dense_frames = dense_frames.reshape(
-            num_rgb_blocks - 1,
-            residual_num_diffs + 1,
-            3,
-            resized_height,
-            resized_width,
-        )
-        residual_steps = dense_frames[:, 1:] - dense_frames[:, :-1]
-        residuals = residual_steps.sum(dim=1)
+    if num_residual_blocks:
+        normalized_frames = _normalize_frames(base_video, processor.video_processor)
+        residuals = normalized_frames[1:] - normalized_frames[:-1]
         pixel_values_residuals = _pack_residual_patches(
             residuals, patch_size=patch_size, merge_size=merge_size
         )
@@ -234,7 +190,7 @@ def prepare_rit_video_inputs(
         )
 
     residual_grid_thw = torch.tensor(
-        [[num_rgb_blocks - 1, grid_h, grid_w]], dtype=torch.long
+        [[num_residual_blocks, grid_h, grid_w]], dtype=torch.long
     )
     video_grid_thw = torch.tensor(
         [[num_interleaved_blocks, grid_h, grid_w]], dtype=torch.long
@@ -248,8 +204,9 @@ def prepare_rit_video_inputs(
     interleaved_midpoints = []
     for block_index, rgb_midpoint in enumerate(rgb_midpoints):
         interleaved_midpoints.append(rgb_midpoint)
-        if block_index < len(residual_midpoints):
-            interleaved_midpoints.append(residual_midpoints[block_index])
+        interleaved_midpoints.extend(
+            residual_midpoints[2 * block_index : 2 * block_index + 2]
+        )
     temporal_midpoints = torch.tensor(interleaved_midpoints, dtype=torch.float32)
 
     text = processor.apply_chat_template(

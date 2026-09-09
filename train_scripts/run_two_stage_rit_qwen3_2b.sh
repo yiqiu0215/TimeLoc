@@ -9,7 +9,6 @@ gebplus_annotation_path="/workspace/s/lzw/datasets/GEB+/train.json"
 gebplus_video_root="/workspace/s/lzw/datasets/GEB+/videos"
 timelens_data_root="/workspace/s/lzw/datasets/TimeLens-100K"
 fps=1
-residual_num_diffs=4
 min_tokens=64
 total_tokens=14336
 fps_max_frames=""
@@ -34,7 +33,6 @@ while [[ $# -gt 0 ]]; do
     --gebplus_video_root) gebplus_video_root="$2"; shift 2 ;;
     --timelens_data_root) timelens_data_root="$2"; shift 2 ;;
     --fps) fps="$2"; shift 2 ;;
-    --residual_num_diffs) residual_num_diffs="$2"; shift 2 ;;
     --min_tokens) min_tokens="$2"; shift 2 ;;
     --total_tokens) total_tokens="$2"; shift 2 ;;
     --fps_max_frames) fps_max_frames="$2"; shift 2 ;;
@@ -90,7 +88,7 @@ fi
 gradient_accumulation_steps=$((global_batch_size / (batch_per_device * num_devices)))
 if [[ -z "${fps_max_frames}" ]]; then
   max_pseudo_blocks=$((total_tokens / min_tokens))
-  max_rgb_blocks=$(((max_pseudo_blocks + 1) / 2))
+  max_rgb_blocks=$(((max_pseudo_blocks + 1) / 3))
   fps_max_frames=$((max_rgb_blocks * 2))
 fi
 
@@ -127,7 +125,6 @@ deepspeed training/train/train_sft_timelens.py \
   --gebplus_annotation_path "${gebplus_annotation_path}" \
   --gebplus_video_root "${gebplus_video_root}" \
   --use_residual_tokens True \
-  --residual_num_diffs "${residual_num_diffs}" \
   --remove_unused_columns False \
   --output_dir "${stage1_output}" \
   --min_tokens "${min_tokens}" \
@@ -187,7 +184,6 @@ deepspeed training/train/train_sft_timelens.py \
   --timelens_data_root "${timelens_data_root}" \
   --target_size "${target_size}" \
   --use_residual_tokens True \
-  --residual_num_diffs "${residual_num_diffs}" \
   --remove_unused_columns False \
   --output_dir "${stage2_output}" \
   --min_tokens "${min_tokens}" \

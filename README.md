@@ -1,34 +1,18 @@
 # TimeLoc-motion
 
-TimeLoc-motion 是一个基于 **Qwen3-VL-2B** 的视频时序定位研究项目。当前实现使用残差交叉时序序列（Residual-Interleaved Temporal Tokens, RIT），在 RGB 时序块之间插入由相邻区间运动变化构造的残差块，以增强模型对事件边界和状态变化的建模能力。
+TimeLoc-motion 是一个基于 **Qwen3-VL-2B** 的视频时序定位研究项目。当前实现使用残差交叉时序序列（Residual-Interleaved Temporal Tokens, RIT），在 RGB 时序块后插入所有相邻采样帧的独立差分块，以增强模型对事件边界和状态变化的建模能力。
 
 > 当前仓库提供模型、数据处理、两阶段训练与评测代码。所有性能结论均需以服务器端正式实验结果为准。
 
 ## 方法概览
 
-给定视频，首先按照采样帧率 $f$（默认 $1\ \mathrm{FPS}$）提取 RGB 帧，并按照 Qwen3-VL 的 `temporal_patch_size=2` 构造 RGB temporal block。对于每两个相邻 RGB block 之间的真实时间区间，均匀采样 $M+1=5$ 个帧位置，得到四个相邻帧残差：
+按 FPS 采样得到 N 帧 F0,...,F(N−1)。对统一缩放和归一化后的所有相邻帧直接计算 R_i = F_(i+1) − F_i，共 N−1 个独立三通道有符号差分。不额外解码区间内帧，也不跨时间累加差分。
 
-$$
-\Delta_i = I(\tau_{i+1}) - I(\tau_i), \qquad i=0,1,2,3.
-$$
+RGB 仍按 temporal_patch_size=2 分为 K=ceil(N/2) 个块。每个差分在时间维复制两次，与 RGB 共用冻结的 Conv3D Patch Embedding。每个 RGB 块后依次放置块内差分和连接下一块的差分（若存在）。例如四帧的序列为：
 
-四个残差通过累加合并为一个三通道残差块：
+RGB(F0,F1), R0, R1, RGB(F2,F3), R2。
 
-$$
-R_k = \sum_{i=0}^{3}\Delta_i.
-$$
-
-由于上述求和具有 telescoping 性质，当前实现等价于区间端点差：
-
-$$
-R_k = I(\tau_4)-I(\tau_0).
-$$
-
-残差块在时间维复制为深度 2，与 RGB block 共用 Qwen3-VL 原生 Conv3D Patch Embedding。RGB 与残差 token 按照下式交叉排列：
-
-$$
-\mathcal{Z} = [Z_0^{\mathrm{rgb}}, Z_0^{\mathrm{res}}, Z_1^{\mathrm{rgb}}, \ldots, Z_{K-2}^{\mathrm{res}}, Z_{K-1}^{\mathrm{rgb}}].
-$$
+总视觉块数为 ceil(N/2)+N−1。奇数帧的最后一个 RGB 块复制末帧补齐，但不为补齐帧生成差分。
 
 Prompt 中的文本时间戳使用 RGB block 和 residual block 各自真实时间区间的中点。视觉 token 不再叠加连续时间编码，保留 Qwen3-VL 原有位置编码。
 
@@ -37,11 +21,8 @@ flowchart LR
     V["输入视频"] --> S["按 FPS 采样 RGB 帧"]
     S --> B["按 temporal_patch_size=2 分块"]
     B --> RP["冻结的共享 RGB Patch Embedding"]
-    B --> G["相邻 RGB block 的时间间隔"]
-    G --> U["均匀采样 5 帧"]
-    U --> D["计算 4 个有符号相邻帧残差"]
-    D --> A["Accumulate 为 1 个三通道残差"]
-    A --> C["时间维复制到深度 2"]
+    S --> D["所有相邻采样帧直接差分"]
+    D --> C["每个差分在时间维复制到深度 2"]
     C --> RP
     RP --> I["RGB / residual token 交叉排列"]
     I --> E["冻结的 Qwen3-VL ViT"]
@@ -62,11 +43,11 @@ flowchart LR
 系统会在视频内容前加入如下视觉序列说明：
 
 ```text
-The visual input is an interleaved sequence of RGB frame blocks and accumulated
-residual-motion blocks, ordered as RGB, residual, RGB, residual, and so on.
-Each residual block accumulates uniformly sampled frame differences and describes
-the visual change between its adjacent RGB blocks, and the timestamp before every
-block is its real temporal midpoint.
+The visual input is an interleaved sequence of RGB frame blocks and adjacent-frame
+residual-motion blocks. Each RGB block contains two sampled frames and is followed
+by their within-pair difference and then the difference to the next pair, when available.
+Each residual is the later sampled frame minus the immediately preceding sampled frame.
+The timestamp before every block is its real temporal midpoint.
 ```
 
 随后拼接任务指令、按真实区间中点生成的时间戳提示以及对应的监督答案。
@@ -158,25 +139,25 @@ bash scripts/eval_timelens_bench.sh
 TimeLoc-motion/
 ├── training/
 │   ├── models/rit_qwen3_vl.py          # RIT 模型与共享 Patch Embedding 路径
-│   └── data/residual_video.py           # 残差采样、累加与时序构造
+│   └── data/residual_video.py           # 相邻采样帧差分与时序构造
 ├── train_scripts/
 │   ├── run_two_stage_rit_qwen3_2b.sh    # GEB+ -> TimeLens 20K 两阶段训练
 │   └── run_stage2_rit_qwen3_2b.sh       # Stage 2 独立训练
 ├── scripts/eval_timelens_bench.sh        # 时序定位评测入口
 ├── evaluation/                           # 推理与指标计算
 └── ideas_docs/
-    └── residual_interleaved_temporal_tokens/design.md
+    └── adjacent_sampled_frame_residuals/design.md
 ```
 
 ## 兼容性与实验注意事项
 
-- 当前结构版本为 `shared_rgb_patch_accumulate_v2`。
-- 旧版“独立 residual Patch Embedding”权重与当前共享 Patch Embedding 结构不完全兼容。
-- 修改 FPS、`temporal_patch_size`、residual 采样数或 token budget 后，需要同时检查训练和评测预处理。
-- 四残差直接求和会退化为区间端点差；是否优于保留多步运动信息，需要通过消融实验验证。
+- 当前结构版本为 `shared_rgb_patch_adjacent_v3`。
+- 旧版 RIT checkpoint 的序列语义与当前方案不同，加载入口会拒绝旧结构版本。请从原始 Qwen3-VL 权重重新进行两阶段训练。
+- 修改 FPS、`temporal_patch_size`、token budget 后，需要同时检查训练和评测预处理。
+- 已删除 residual_num_diffs 参数。固定总预算下，新增差分块会降低可用空间分辨率或最大采样帧数；效果需实验验证。
 - 本仓库不包含数据集、模型权重、训练输出和正式实验指标。
 
-完整设计说明见 [ideas_docs/residual_interleaved_temporal_tokens/design.md](ideas_docs/residual_interleaved_temporal_tokens/design.md)。
+完整设计说明见 [ideas_docs/adjacent_sampled_frame_residuals/design.md](ideas_docs/adjacent_sampled_frame_residuals/design.md)。
 
 ## 致谢
 

@@ -140,7 +140,6 @@ class DataArguments:
     fps_max_frames: Optional[int] = None
 
     use_residual_tokens: bool = False
-    residual_num_diffs: int = 4
     residual_gate_init: float = 0.1
 
     raw_anno_path: Optional[str] = field(default=None)

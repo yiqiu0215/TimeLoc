@@ -30,7 +30,6 @@ def parse_args():
     parser.add_argument("--fps", type=float, default=None)
     parser.add_argument("--fps_max_frames", type=int, default=None)
     parser.add_argument("--use_residual_tokens", action="store_true")
-    parser.add_argument("--residual_num_diffs", type=int, default=4)
 
     parser.add_argument("--dataset", required=True, help="Dataset name")
     parser.add_argument("--split", default="test")
@@ -74,7 +73,6 @@ if __name__ == "__main__":
         getattr(config, "use_residual_tokens", False)
     )
     if args.use_residual_tokens:
-        args.residual_num_diffs = int(getattr(config, "residual_num_diffs", 4))
         if args.min_tokens is None:
             args.min_tokens = int(getattr(config, "minimum_tokens_per_block", 64))
         if args.total_tokens is None:
@@ -87,7 +85,7 @@ if __name__ == "__main__":
             args.fps_max_frames = getattr(config, "rit_fps_max_frames", None)
         if args.fps_max_frames is None:
             max_pseudo_blocks = args.total_tokens // args.min_tokens
-            args.fps_max_frames = ((max_pseudo_blocks + 1) // 2) * 2
+            args.fps_max_frames = ((max_pseudo_blocks + 1) // 3) * 2
     else:
         args.min_tokens = 16 if args.min_tokens is None else args.min_tokens
         args.total_tokens = 3584 if args.total_tokens is None else args.total_tokens

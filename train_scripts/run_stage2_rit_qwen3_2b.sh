@@ -79,7 +79,7 @@ import sys
 with open(sys.argv[1], "r", encoding="utf-8") as file:
     config = json.load(file)
 
-expected_version = "shared_rgb_patch_accumulate_v2"
+expected_version = "shared_rgb_patch_adjacent_v3"
 version = config.get("rit_architecture_version")
 if version != expected_version:
     raise SystemExit(
@@ -87,7 +87,6 @@ if version != expected_version:
     )
 
 keys = (
-    "residual_num_diffs",
     "minimum_tokens_per_block",
     "combined_visual_token_budget",
     "rit_sampling_fps",
@@ -101,7 +100,6 @@ print("|".join(str(config[key]) for key in keys))
 ' "${stage1_model_path}/config.json")"
 
 IFS='|' read -r \
-  residual_num_diffs \
   min_tokens \
   total_tokens \
   fps \
@@ -109,7 +107,7 @@ IFS='|' read -r \
 
 if [[ "${fps_max_frames}" == "None" ]]; then
   max_pseudo_blocks=$((total_tokens / min_tokens))
-  max_rgb_blocks=$(((max_pseudo_blocks + 1) / 2))
+  max_rgb_blocks=$(((max_pseudo_blocks + 1) / 3))
   fps_max_frames=$((max_rgb_blocks * 2))
 fi
 
@@ -153,7 +151,6 @@ deepspeed training/train/train_sft_timelens.py \
   --timelens_data_root "${timelens_data_root}" \
   --target_size "${target_size}" \
   --use_residual_tokens True \
-  --residual_num_diffs "${residual_num_diffs}" \
   --remove_unused_columns False \
   --output_dir "${output_dir}" \
   --min_tokens "${min_tokens}" \

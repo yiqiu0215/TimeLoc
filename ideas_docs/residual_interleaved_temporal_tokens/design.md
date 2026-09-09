@@ -1,3 +1,5 @@
+> 历史方案：本文描述已停用的区间内多差分累加方案。当前实现见 [所有相邻采样帧差分](../adjacent_sampled_frame_residuals/design.md)。
+
 # Residual-Interleaved Temporal Token Qwen3-VL 方案
 
 ## 1. 文档状态

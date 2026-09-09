@@ -19,9 +19,6 @@ from transformers.utils import is_torchdynamo_compiling
 class RITQwen3VLVisionModel(Qwen3VLVisionModel):
     def __init__(self, config, *inputs, **kwargs):
         super().__init__(config, *inputs, **kwargs)
-        self.residual_num_diffs = int(getattr(config, "residual_num_diffs", 4))
-        if self.residual_num_diffs <= 0:
-            raise ValueError("residual_num_diffs must be positive.")
         self.residual_norm = nn.LayerNorm(config.hidden_size)
         self.residual_gate = nn.Parameter(
             torch.tensor(float(getattr(config, "residual_gate_init", 0.1)))
@@ -85,9 +82,9 @@ class RITQwen3VLVisionModel(Qwen3VLVisionModel):
             residual_t, residual_h, residual_w = [
                 int(value) for value in residual_grid.tolist()
             ]
-            if residual_t != max(rgb_t - 1, 0):
+            if residual_t not in (2 * rgb_t - 2, 2 * rgb_t - 1):
                 raise ValueError(
-                    f"Residual block count must be K-1, got K={rgb_t}, R={residual_t}."
+                    f"Residual block count must be 2K-2 or 2K-1, got K={rgb_t}, R={residual_t}."
                 )
             if (rgb_h, rgb_w) != (residual_h, residual_w):
                 raise ValueError("RGB and residual spatial grids must match.")
@@ -95,13 +92,16 @@ class RITQwen3VLVisionModel(Qwen3VLVisionModel):
             patches_per_block = rgb_h * rgb_w
             rgb_chunk = rgb_chunk.reshape(rgb_t, patches_per_block, -1)
             residual_chunk = residual_chunk.reshape(
-                residual_t, patches_per_block, -1
+                residual_t, patches_per_block, rgb_chunk.shape[-1]
             )
             blocks = []
             for block_index in range(rgb_t):
                 blocks.append(rgb_chunk[block_index])
-                if block_index < residual_t:
-                    blocks.append(residual_chunk[block_index])
+                # Keep both the within-pair and cross-pair differences.
+                for residual_index in range(
+                    2 * block_index, min(2 * block_index + 2, residual_t)
+                ):
+                    blocks.append(residual_chunk[residual_index])
             video_embeddings = torch.cat(blocks, dim=0)
 
             interleaved_videos.append(video_embeddings)
@@ -360,14 +360,13 @@ class RITQwen3VLForConditionalGeneration(Qwen3VLForConditionalGeneration):
     def __init__(self, config):
         if getattr(config, "use_residual_tokens", False) and getattr(
             config, "rit_architecture_version", None
-        ) != "shared_rgb_patch_accumulate_v2":
+        ) != "shared_rgb_patch_adjacent_v3":
             raise ValueError(
-                "This checkpoint is incompatible with the shared RGB patch embedding architecture."
+                "This checkpoint is incompatible with the all-adjacent sampled-frame residual sequence."
             )
         defaults = {
             "use_residual_tokens": True,
-            "rit_architecture_version": "shared_rgb_patch_accumulate_v2",
-            "residual_num_diffs": 4,
+            "rit_architecture_version": "shared_rgb_patch_adjacent_v3",
             "residual_in_channels": 3,
             "residual_gate_init": 0.1,
             "combined_visual_token_budget": 14336,

@@ -15,9 +15,10 @@ GROUNDER_PROMPT = (
 
 RIT_GROUNDER_PROMPT = (
     "The visual input is an interleaved sequence of RGB frame blocks and "
-    "accumulated residual-motion blocks, ordered as RGB, residual, RGB, residual, and so on. "
-    "Each residual block accumulates uniformly sampled frame differences and describes the visual change between its adjacent RGB "
-    "blocks, and the timestamp before every block is its real temporal midpoint. "
+    "adjacent-frame residual-motion blocks. Each RGB block contains two sampled frames "
+    "and is followed by their within-pair difference and then the difference to the next pair, when available. "
+    "Each residual is the later sampled frame minus the immediately preceding sampled frame. "
+    "The timestamp before every block is its real temporal midpoint. "
 ) + GROUNDER_PROMPT
 
 # prompt for Qwen2.5-VL TimeLens models with interleaved textual timestamps
@@ -115,7 +116,6 @@ class GroundingDataset(Dataset):
             inputs = prepare_rit_video_inputs(
                 self.processor,
                 messages,
-                residual_num_diffs=self.args.residual_num_diffs,
                 min_tokens=self.args.min_tokens,
                 total_tokens=self.args.total_tokens,
                 add_generation_prompt=True,

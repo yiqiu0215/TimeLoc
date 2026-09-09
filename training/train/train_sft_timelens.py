@@ -176,8 +176,7 @@ def train():
             )
         residual_config = {
             "use_residual_tokens": True,
-            "rit_architecture_version": "shared_rgb_patch_accumulate_v2",
-            "residual_num_diffs": data_args.residual_num_diffs,
+            "rit_architecture_version": "shared_rgb_patch_adjacent_v3",
             "residual_in_channels": 3,
             "residual_gate_init": data_args.residual_gate_init,
             "use_true_midpoint_time_embedding": False,
@@ -187,10 +186,10 @@ def train():
             "rit_fps_max_frames": data_args.fps_max_frames,
         }
         if getattr(config, "use_residual_tokens", False):
-            if getattr(config, "rit_architecture_version", None) != "shared_rgb_patch_accumulate_v2":
+            if getattr(config, "rit_architecture_version", None) != "shared_rgb_patch_adjacent_v3":
                 raise ValueError(
-                    "The checkpoint uses the retired residual-specific patch embedding "
-                    "and is incompatible with shared_rgb_patch_accumulate_v2."
+                    "The checkpoint uses a different residual sequence "
+                    "and is incompatible with shared_rgb_patch_adjacent_v3."
                 )
             mismatched = {
                 name: (getattr(config, name), value)
